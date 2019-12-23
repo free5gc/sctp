@@ -107,8 +107,12 @@ func parseSndRcvInfo(b []byte) (*SndRcvInfo, error) {
 func (c *SCTPConn) SCTPRead(b []byte) (int, *SndRcvInfo, error) {
 	oob := make([]byte, 254)
 	for {
-		n, oobn, recvflags, _, err := syscall.Recvmsg(c.fd(), b, oob, 0)
+		n, oobn, recvflags, _, err := syscall.Recvmsg(c.fd(), b, oob, syscall.MSG_DONTWAIT|syscall.MSG_CMSG_CLOEXEC)
 		if err != nil {
+			switch err {
+			case syscall.EAGAIN:
+				continue
+			}
 			return n, nil, err
 		}
 
