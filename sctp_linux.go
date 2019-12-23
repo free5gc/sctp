@@ -233,6 +233,7 @@ func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, contr
 // AcceptSCTP waits for and returns the next SCTP connection to the listener.
 func (ln *SCTPListener) AcceptSCTP() (*SCTPConn, error) {
 	for {
+		syscall.SetsockoptInt(ln.fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
 		fd, _, err := syscall.Accept4(ln.fd, syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC)
 		if err == nil {
 			return NewSCTPConn(fd, nil), err
