@@ -133,11 +133,24 @@ const (
 	SCTP_MAX_STREAM = 0xffff
 )
 
+const (
+	RtoInitial = 300
+	RtoMax     = 500
+	RtoMin     = 100
+)
+
 type InitMsg struct {
 	NumOstreams    uint16
 	MaxInstreams   uint16
 	MaxAttempts    uint16
 	MaxInitTimeout uint16
+}
+
+type RtoInfo struct {
+	sctpAssoc   int32
+	srtoInitial uint32
+	srtoMax     uint32
+	stroMin     uint32
 }
 
 type SndRcvInfo struct {
@@ -217,6 +230,21 @@ var ntohs = htons
 func setInitOpts(fd int, options InitMsg) error {
 	optlen := unsafe.Sizeof(options)
 	_, _, err := setsockopt(fd, SCTP_INITMSG, uintptr(unsafe.Pointer(&options)), uintptr(optlen))
+	return err
+}
+
+func GetRtoInfo(fd int) (error, RtoInfo) {
+	var rtoInfo RtoInfo
+	rtolen := unsafe.Sizeof(rtoInfo)
+
+	_, _, err := getsockopt(fd, SCTP_RTOINFO, uintptr(unsafe.Pointer(&rtoInfo)), uintptr(unsafe.Pointer(&rtolen)))
+
+	return err, rtoInfo
+}
+
+func setRtoInfo(fd int, rtoInfo RtoInfo) error {
+	rtolen := unsafe.Sizeof(rtoInfo)
+	_, _, err := setsockopt(fd, SCTP_RTOINFO, uintptr(unsafe.Pointer(&rtoInfo)), uintptr(rtolen))
 	return err
 }
 
@@ -718,12 +746,15 @@ type SocketConfig struct {
 
 	// InitMsg is the options to send in the initial SCTP message
 	InitMsg InitMsg
+
+	// RtoInfo
+	RtoInfo RtoInfo
 }
 
 func (cfg *SocketConfig) Listen(net string, laddr *SCTPAddr) (*SCTPListener, error) {
-	return listenSCTPExtConfig(net, laddr, cfg.InitMsg, cfg.Control)
+	return listenSCTPExtConfig(net, laddr, cfg.InitMsg, cfg.RtoInfo, cfg.Control)
 }
 
 func (cfg *SocketConfig) Dial(net string, laddr, raddr *SCTPAddr) (*SCTPConn, error) {
-	return dialSCTPExtConfig(net, laddr, raddr, cfg.InitMsg, cfg.Control)
+	return dialSCTPExtConfig(net, laddr, raddr, cfg.InitMsg, cfg.RtoInfo, cfg.Control)
 }

@@ -32,20 +32,31 @@ type resolveSCTPAddrTest struct {
 	err           error
 }
 
+type rtoTest struct {
+	inputRto    RtoInfo
+	expectedRto RtoInfo
+}
+
 var resolveSCTPAddrTests = []resolveSCTPAddrTest{
-	{"sctp", "127.0.0.1:0", &SCTPAddr{IPAddrs: []net.IPAddr{net.IPAddr{IP: net.IPv4(127, 0, 0, 1)}}, Port: 0}, nil},
-	{"sctp4", "127.0.0.1:65535", &SCTPAddr{IPAddrs: []net.IPAddr{net.IPAddr{IP: net.IPv4(127, 0, 0, 1)}}, Port: 65535}, nil},
+	{"sctp", "127.0.0.1:0", &SCTPAddr{IPAddrs: []net.IPAddr{{IP: net.IPv4(127, 0, 0, 1)}}, Port: 0}, nil},
+	{"sctp4", "127.0.0.1:65535", &SCTPAddr{IPAddrs: []net.IPAddr{{IP: net.IPv4(127, 0, 0, 1)}}, Port: 65535}, nil},
 
-	{"sctp", "[::1]:0", &SCTPAddr{IPAddrs: []net.IPAddr{net.IPAddr{IP: net.ParseIP("::1")}}, Port: 0}, nil},
-	{"sctp6", "[::1]:65535", &SCTPAddr{IPAddrs: []net.IPAddr{net.IPAddr{IP: net.ParseIP("::1")}}, Port: 65535}, nil},
+	{"sctp", "[::1]:0", &SCTPAddr{IPAddrs: []net.IPAddr{{IP: net.ParseIP("::1")}}, Port: 0}, nil},
+	{"sctp6", "[::1]:65535", &SCTPAddr{IPAddrs: []net.IPAddr{{IP: net.ParseIP("::1")}}, Port: 65535}, nil},
 
-	{"sctp", "[fe80::1%eth0]:0", &SCTPAddr{IPAddrs: []net.IPAddr{net.IPAddr{IP: net.ParseIP("fe80::1"), Zone: "eth0"}}, Port: 0}, nil},
-	{"sctp6", "[fe80::1%eth0]:65535", &SCTPAddr{IPAddrs: []net.IPAddr{net.IPAddr{IP: net.ParseIP("fe80::1"), Zone: "eth0"}}, Port: 65535}, nil},
+	{"sctp", "[fe80::1%eth0]:0", &SCTPAddr{IPAddrs: []net.IPAddr{{IP: net.ParseIP("fe80::1"), Zone: "eth0"}}, Port: 0}, nil},
+	{"sctp6", "[fe80::1%eth0]:65535", &SCTPAddr{IPAddrs: []net.IPAddr{{IP: net.ParseIP("fe80::1"), Zone: "eth0"}}, Port: 65535}, nil},
 
 	{"sctp", ":12345", &SCTPAddr{Port: 12345}, nil},
 
-	{"sctp", "127.0.0.1/10.0.0.1:0", &SCTPAddr{IPAddrs: []net.IPAddr{net.IPAddr{IP: net.IPv4(127, 0, 0, 1)}, net.IPAddr{IP: net.IPv4(10, 0, 0, 1)}}, Port: 0}, nil},
-	{"sctp4", "127.0.0.1/10.0.0.1:65535", &SCTPAddr{IPAddrs: []net.IPAddr{net.IPAddr{IP: net.IPv4(127, 0, 0, 1)}, net.IPAddr{IP: net.IPv4(10, 0, 0, 1)}}, Port: 65535}, nil},
+	{"sctp", "127.0.0.1/10.0.0.1:0", &SCTPAddr{IPAddrs: []net.IPAddr{{IP: net.IPv4(127, 0, 0, 1)}, {IP: net.IPv4(10, 0, 0, 1)}}, Port: 0}, nil},
+	{"sctp4", "127.0.0.1/10.0.0.1:65535", &SCTPAddr{IPAddrs: []net.IPAddr{{IP: net.IPv4(127, 0, 0, 1)}, {IP: net.IPv4(10, 0, 0, 1)}}, Port: 65535}, nil},
+}
+
+var rtoTests = []rtoTest{
+	{RtoInfo{srtoInitial: RtoInitial, srtoMax: RtoMax, stroMin: RtoMin}, RtoInfo{srtoInitial: RtoInitial, srtoMax: RtoMax, stroMin: RtoMin}},
+	{RtoInfo{srtoInitial: 100, srtoMax: 200, stroMin: 200}, RtoInfo{srtoInitial: 100, srtoMax: 200, stroMin: 200}},
+	{RtoInfo{srtoInitial: 400, srtoMax: 400, stroMin: 400}, RtoInfo{srtoInitial: 400, srtoMax: 400, stroMin: 400}},
 }
 
 func TestSCTPAddrString(t *testing.T) {
@@ -77,7 +88,7 @@ var sctpListenerNameTests = []struct {
 	net   string
 	laddr *SCTPAddr
 }{
-	{"sctp4", &SCTPAddr{IPAddrs: []net.IPAddr{net.IPAddr{IP: net.IPv4(127, 0, 0, 1)}}}},
+	{"sctp4", &SCTPAddr{IPAddrs: []net.IPAddr{{IP: net.IPv4(127, 0, 0, 1)}}}},
 	{"sctp4", &SCTPAddr{}},
 	{"sctp4", nil},
 	{"sctp", &SCTPAddr{Port: 7777}},
@@ -175,4 +186,30 @@ func TestSCTPCloseRecv(t *testing.T) {
 		t.Fatalf("close failed: %v", err)
 	}
 	wg.Wait()
+}
+
+var sctpListener *SCTPListener
+
+func TestSCTPSetRto(t *testing.T) {
+	initMsg := InitMsg{NumOstreams: 3, MaxInstreams: 5, MaxAttempts: 4, MaxInitTimeout: 8}
+	fails := 0
+	for _, tt := range rtoTests {
+		addr, _ := ResolveSCTPAddr("sctp", "127.0.0.1:0")
+		if listener, err := ListenSCTPExt("sctp", addr, initMsg, tt.inputRto); err != nil {
+			t.Fatalf("close failed: %v", err)
+			return
+		} else {
+			sctpListener = listener
+		}
+		defer sctpListener.Close()
+		err, rtoInfo := GetRtoInfo(sctpListener.fd)
+
+		if err != nil {
+			fails++
+		} else {
+			if !reflect.DeepEqual(rtoInfo, tt.expectedRto) {
+				t.Errorf("RTO[0x%x] \t ExpectedRTO[0x%x]\n", rtoInfo, tt.expectedRto)
+			}
+		}
+	}
 }
