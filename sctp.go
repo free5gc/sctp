@@ -748,7 +748,7 @@ type SocketConfig struct {
 	InitMsg InitMsg
 
 	// RtoInfo
-	RtoInfo RtoInfo
+	RtoInfo *RtoInfo
 }
 
 func (cfg *SocketConfig) Listen(net string, laddr *SCTPAddr) (*SCTPListener, error) {

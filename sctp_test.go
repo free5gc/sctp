@@ -195,7 +195,7 @@ func TestSCTPSetRto(t *testing.T) {
 	fails := 0
 	for _, tt := range rtoTests {
 		addr, _ := ResolveSCTPAddr("sctp", "127.0.0.1:0")
-		if listener, err := ListenSCTPExt("sctp", addr, initMsg, tt.inputRto); err != nil {
+		if listener, err := ListenSCTPExt("sctp", addr, initMsg, &tt.inputRto); err != nil {
 			t.Fatalf("close failed: %v", err)
 			return
 		} else {
