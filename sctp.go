@@ -656,8 +656,9 @@ func (c *SCTPConn) SetWriteDeadline(t time.Time) error {
 }
 
 type SCTPListener struct {
-	fd int
-	m  sync.Mutex
+	fd   int
+	epfd int // fd for epoll
+	m    sync.Mutex
 }
 
 func (ln *SCTPListener) Addr() net.Addr {

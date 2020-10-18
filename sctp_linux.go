@@ -119,13 +119,14 @@ func (c *SCTPConn) SCTPRead(b []byte) (int, *SndRcvInfo, error) {
 		if err := c.notificationHandler(b[:n]); err != nil {
 			return 0, nil, err
 		}
+	} else {
+		var info *SndRcvInfo
+		if oobn > 0 {
+			info, err = parseSndRcvInfo(oob[:oobn])
+		}
+		return n, info, err
 	}
-
-	var info *SndRcvInfo
-	if oobn > 0 {
-		info, err = parseSndRcvInfo(oob[:oobn])
-	}
-	return n, info, err
+	return 0, nil, err
 }
 
 func (c *SCTPConn) Close() error {
@@ -175,6 +176,10 @@ func (c *SCTPConn) SetReadTimeout(second int64, usecond int64) error {
 	return syscall.SetsockoptTimeval(c.fd(), syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &tv)
 }
 
+func (c *SCTPConn) SetNonBlock(nonBlock bool) error {
+	return syscall.SetNonblock(c.fd(), nonBlock)
+}
+
 // ListenSCTP - start listener on specified address/port
 func ListenSCTP(net string, laddr *SCTPAddr) (*SCTPListener, error) {
 	return ListenSCTPExt(net, laddr, InitMsg{NumOstreams: SCTP_MAX_STREAM}, nil)
@@ -190,7 +195,7 @@ func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, rtoIn
 	af, ipv6only := favoriteAddrFamily(network, laddr, nil, "listen")
 	sock, err := syscall.Socket(
 		af,
-		syscall.SOCK_STREAM,
+		syscall.SOCK_STREAM|syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC,
 		syscall.IPPROTO_SCTP,
 	)
 	if err != nil {
@@ -206,6 +211,12 @@ func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, rtoIn
 	if err = setDefaultSockopts(sock, af, ipv6only); err != nil {
 		return nil, err
 	}
+
+	// enable REUSEADDR option
+	if err = syscall.SetsockoptInt(sock, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
+		return nil, err
+	}
+
 	if control != nil {
 		rc := rawConn{sockfd: sock}
 		if err = control(network, laddr.String(), rc); err != nil {
@@ -244,15 +255,62 @@ func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, rtoIn
 	if err != nil {
 		return nil, err
 	}
+
+	// epoll will be used in Accept() to avoid busy waiting because of non-blocking socket
+	epfd, err := createEpollForSock(sock)
+	if err != nil {
+		return nil, err
+	}
+
 	return &SCTPListener{
-		fd: sock,
+		fd:   sock,
+		epfd: epfd,
 	}, nil
 }
 
+func createEpollForSock(sock int) (int, error) {
+	epfd, err := syscall.EpollCreate1(syscall.EPOLL_CLOEXEC)
+	if err != nil {
+		return -1, err
+	}
+
+	// close epfd on error
+	defer func() {
+		if err != nil {
+			syscall.Close(epfd)
+		}
+	}()
+
+	event := syscall.EpollEvent{
+		Events: syscall.EPOLLIN,
+		Fd:     int32(sock),
+	}
+	err = syscall.EpollCtl(epfd, syscall.EPOLL_CTL_ADD, sock, &event)
+	if err != nil {
+		return -1, err
+	}
+	return epfd, nil
+}
+
 // AcceptSCTP waits for and returns the next SCTP connection to the listener.
+// it will use EpollWait to wait for a incoming connection then call syscall.Accept4 to accept
 func (ln *SCTPListener) AcceptSCTP() (*SCTPConn, error) {
-	fd, _, err := syscall.Accept4(ln.fd, 0)
-	return NewSCTPConn(fd, nil), err
+	var events [1]syscall.EpollEvent
+	n, err := syscall.EpollWait(ln.epfd, events[:], -1)
+	if err != nil {
+		return nil, err
+	}
+
+	if n == 0 {
+		return nil, err
+	}
+
+	if events[0].Fd == int32(ln.fd) {
+		fd, _, err := syscall.Accept4(ln.fd, 0)
+		return NewSCTPConn(fd, nil), err
+	} else {
+		return nil, err
+	}
 }
 
 // Accept waits for and returns the next connection connection to the listener.
@@ -262,6 +320,7 @@ func (ln *SCTPListener) Accept() (net.Conn, error) {
 
 func (ln *SCTPListener) Close() error {
 	syscall.Shutdown(ln.fd, syscall.SHUT_RDWR)
+	syscall.Close(ln.epfd)
 	return syscall.Close(ln.fd)
 }
 
