@@ -133,12 +133,6 @@ const (
 	SCTP_MAX_STREAM = 0xffff
 )
 
-const (
-	RtoInitial = 300
-	RtoMax     = 500
-	RtoMin     = 100
-)
-
 type InitMsg struct {
 	NumOstreams    uint16
 	MaxInstreams   uint16
@@ -146,11 +140,12 @@ type InitMsg struct {
 	MaxInitTimeout uint16
 }
 
+// Retransmission Timeout Parameters defined in RFC 6458 8.1
 type RtoInfo struct {
-	sctpAssoc   int32
-	srtoInitial uint32
-	srtoMax     uint32
-	stroMin     uint32
+	SrtoAssocID int32
+	SrtoInitial uint32
+	SrtoMax     uint32
+	StroMin     uint32
 }
 
 type SndRcvInfo struct {
@@ -233,13 +228,13 @@ func setInitOpts(fd int, options InitMsg) error {
 	return err
 }
 
-func GetRtoInfo(fd int) (error, RtoInfo) {
+func getRtoInfo(fd int) (RtoInfo, error) {
 	var rtoInfo RtoInfo
 	rtolen := unsafe.Sizeof(rtoInfo)
 
 	_, _, err := getsockopt(fd, SCTP_RTOINFO, uintptr(unsafe.Pointer(&rtoInfo)), uintptr(unsafe.Pointer(&rtolen)))
 
-	return err, rtoInfo
+	return rtoInfo, err
 }
 
 func setRtoInfo(fd int, rtoInfo RtoInfo) error {
