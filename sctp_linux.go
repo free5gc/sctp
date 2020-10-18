@@ -160,19 +160,11 @@ func (c *SCTPConn) GetReadBuffer() (int, error) {
 	return syscall.GetsockoptInt(c.fd(), syscall.SOL_SOCKET, syscall.SO_RCVBUF)
 }
 
-func (c *SCTPConn) SetWriteTimeout(second int64, usecond int64) error {
-	tv := syscall.Timeval{
-		Sec:  second,
-		Usec: usecond,
-	}
+func (c *SCTPConn) SetWriteTimeout(tv syscall.Timeval) error {
 	return syscall.SetsockoptTimeval(c.fd(), syscall.SOL_SOCKET, syscall.SO_SNDTIMEO, &tv)
 }
 
-func (c *SCTPConn) SetReadTimeout(second int64, usecond int64) error {
-	tv := syscall.Timeval{
-		Sec:  second,
-		Usec: usecond,
-	}
+func (c *SCTPConn) SetReadTimeout(tv syscall.Timeval) error {
 	return syscall.SetsockoptTimeval(c.fd(), syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &tv)
 }
 
@@ -268,6 +260,7 @@ func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, rtoIn
 	}, nil
 }
 
+// createEpollForSock - create an epoll for sock; return an epoll fd if no error
 func createEpollForSock(sock int) (int, error) {
 	epfd, err := syscall.EpollCreate1(syscall.EPOLL_CLOEXEC)
 	if err != nil {
