@@ -84,6 +84,7 @@ const (
 )
 
 type SCTPNotificationType int
+type SCTPAssocID int32
 
 const (
 	SCTP_SN_TYPE_BASE = SCTPNotificationType(iota + (1 << 15))
@@ -409,7 +410,7 @@ func (c *SCTPConn) Write(b []byte) (int, error) {
 }
 
 func (c *SCTPConn) Read(b []byte) (int, error) {
-	n, _, err := c.SCTPRead(b)
+	n, _, _, err := c.SCTPRead(b)
 	if n < 0 {
 		n = 0
 	}
@@ -686,7 +687,7 @@ func (c *SCTPSndRcvInfoWrappedConn) Read(b []byte) (int, error) {
 	if len(b) < int(sndRcvInfoSize) {
 		return 0, syscall.EINVAL
 	}
-	n, info, err := c.conn.SCTPRead(b[sndRcvInfoSize:])
+	n, info, _, err := c.conn.SCTPRead(b[sndRcvInfoSize:])
 	if err != nil {
 		return n, err
 	}

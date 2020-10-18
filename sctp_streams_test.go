@@ -67,7 +67,7 @@ func TestStreams(t *testing.T) {
 				totalrcvd := 0
 				for {
 					buf := make([]byte, 512)
-					n, info, err := sconn.SCTPRead(buf)
+					n, info, _, err := sconn.SCTPRead(buf)
 					if err != nil {
 						if err == io.EOF || err == io.ErrUnexpectedEOF {
 							if n == 0 {
@@ -122,7 +122,7 @@ func TestStreams(t *testing.T) {
 				cn := 0
 				buf := make([]byte, 512)
 				for {
-					cn, info, err = conn.SCTPRead(buf[rn:])
+					cn, info, _, err = conn.SCTPRead(buf[rn:])
 					if err != nil {
 						if err == io.EOF || err == io.ErrUnexpectedEOF {
 							rn += cn

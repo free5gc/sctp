@@ -104,29 +104,58 @@ func parseSndRcvInfo(b []byte) (*SndRcvInfo, error) {
 	return nil, nil
 }
 
-func (c *SCTPConn) SCTPRead(b []byte) (int, *SndRcvInfo, error) {
+func parseNotification(b []byte) Notification {
+	snType := SCTPNotificationType(nativeEndian.Uint16(b[:2]))
+
+	switch snType {
+	case SCTP_SHUTDOWN_EVENT:
+		notification := SCTPShutdownEvent{
+			sseType:    nativeEndian.Uint16(b[:2]),
+			sseFlags:   nativeEndian.Uint16(b[2:4]),
+			sseLength:  nativeEndian.Uint32(b[4:8]),
+			sseAssocID: SCTPAssocID(nativeEndian.Uint32(b[8:])),
+		}
+		return &notification
+	case SCTP_ASSOC_CHANGE:
+		notification := SCTPAssocChangeEvent{
+			sacType:            nativeEndian.Uint16(b[:2]),
+			sacFlags:           nativeEndian.Uint16(b[2:4]),
+			sacLength:          nativeEndian.Uint32(b[4:8]),
+			sacState:           SCTPState(nativeEndian.Uint16(b[8:10])),
+			sacError:           nativeEndian.Uint16(b[10:12]),
+			sacOutboundStreams: nativeEndian.Uint16(b[12:14]),
+			sacInboundStreams:  nativeEndian.Uint16(b[14:16]),
+			sacAssocID:         SCTPAssocID(nativeEndian.Uint32(b[16:20])),
+			sacInfo:            b[20:],
+		}
+		return &notification
+	default:
+		return nil
+	}
+}
+
+// SCTPRead use syscall.Recvmsg to receive SCTP message and return sctp sndrcvinfo/notification if need
+func (c *SCTPConn) SCTPRead(b []byte) (int, *SndRcvInfo, Notification, error) {
 	oob := make([]byte, 254)
 	n, oobn, recvflags, _, err := syscall.Recvmsg(c.fd(), b, oob, 0)
 	if err != nil {
-		return n, nil, err
+		return n, nil, nil, err
 	}
 
 	if n == 0 && oobn == 0 {
-		return 0, nil, io.EOF
+		return 0, nil, nil, io.EOF
 	}
 
-	if recvflags&MSG_NOTIFICATION > 0 && c.notificationHandler != nil {
-		if err := c.notificationHandler(b[:n]); err != nil {
-			return 0, nil, err
-		}
+	if recvflags&MSG_NOTIFICATION > 0 {
+		notification := parseNotification(b[:n])
+		return n, nil, notification, nil
 	} else {
 		var info *SndRcvInfo
 		if oobn > 0 {
 			info, err = parseSndRcvInfo(oob[:oobn])
 		}
-		return n, info, err
+		return n, info, nil, err
 	}
-	return 0, nil, err
 }
 
 func (c *SCTPConn) Close() error {
