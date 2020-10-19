@@ -45,7 +45,7 @@ func TestStreams(t *testing.T) {
 
 	addr, _ := ResolveSCTPAddr("sctp", "127.0.0.1:0")
 	ln, err := ListenSCTPExt("sctp", addr, InitMsg{NumOstreams: STREAM_TEST_STREAMS, MaxInstreams: STREAM_TEST_STREAMS},
-		RtoInfo{srtoInitial: RtoInitial, srtoMax: RtoMax, stroMin: RtoMin})
+		&RtoInfo{SrtoInitial: 3000, SrtoMax: 60000, StroMin: 1000})
 	if err != nil {
 		t.Fatalf("failed to listen: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestStreams(t *testing.T) {
 				totalrcvd := 0
 				for {
 					buf := make([]byte, 512)
-					n, info, err := sconn.SCTPRead(buf)
+					n, info, _, err := sconn.SCTPRead(buf)
 					if err != nil {
 						if err == io.EOF || err == io.ErrUnexpectedEOF {
 							if n == 0 {
@@ -97,7 +97,7 @@ func TestStreams(t *testing.T) {
 			defer func() { wait <- struct{}{} }()
 			conn, err := DialSCTPExt(
 				"sctp", nil, addr, InitMsg{NumOstreams: STREAM_TEST_STREAMS, MaxInstreams: STREAM_TEST_STREAMS},
-				RtoInfo{srtoInitial: RtoInitial, srtoMax: RtoMax, stroMin: RtoMin})
+				&RtoInfo{SrtoInitial: 3000, SrtoMax: 60000, StroMin: 1000})
 			if err != nil {
 				t.Errorf("failed to dial address %s, test #%d: %v", addr.String(), test, err)
 				return
@@ -122,7 +122,7 @@ func TestStreams(t *testing.T) {
 				cn := 0
 				buf := make([]byte, 512)
 				for {
-					cn, info, err = conn.SCTPRead(buf[rn:])
+					cn, info, _, err = conn.SCTPRead(buf[rn:])
 					if err != nil {
 						if err == io.EOF || err == io.ErrUnexpectedEOF {
 							rn += cn
