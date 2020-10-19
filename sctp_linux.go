@@ -104,33 +104,57 @@ func parseSndRcvInfo(b []byte) (*SndRcvInfo, error) {
 	return nil, nil
 }
 
-func (c *SCTPConn) SCTPRead(b []byte) (int, *SndRcvInfo, error) {
+func parseNotification(b []byte) Notification {
+	snType := SCTPNotificationType(nativeEndian.Uint16(b[:2]))
+
+	switch snType {
+	case SCTP_SHUTDOWN_EVENT:
+		notification := SCTPShutdownEvent{
+			sseType:    nativeEndian.Uint16(b[:2]),
+			sseFlags:   nativeEndian.Uint16(b[2:4]),
+			sseLength:  nativeEndian.Uint32(b[4:8]),
+			sseAssocID: SCTPAssocID(nativeEndian.Uint32(b[8:])),
+		}
+		return &notification
+	case SCTP_ASSOC_CHANGE:
+		notification := SCTPAssocChangeEvent{
+			sacType:            nativeEndian.Uint16(b[:2]),
+			sacFlags:           nativeEndian.Uint16(b[2:4]),
+			sacLength:          nativeEndian.Uint32(b[4:8]),
+			sacState:           SCTPState(nativeEndian.Uint16(b[8:10])),
+			sacError:           nativeEndian.Uint16(b[10:12]),
+			sacOutboundStreams: nativeEndian.Uint16(b[12:14]),
+			sacInboundStreams:  nativeEndian.Uint16(b[14:16]),
+			sacAssocID:         SCTPAssocID(nativeEndian.Uint32(b[16:20])),
+			sacInfo:            b[20:],
+		}
+		return &notification
+	default:
+		return nil
+	}
+}
+
+// SCTPRead use syscall.Recvmsg to receive SCTP message and return sctp sndrcvinfo/notification if need
+func (c *SCTPConn) SCTPRead(b []byte) (int, *SndRcvInfo, Notification, error) {
 	oob := make([]byte, 254)
-	for {
-		n, oobn, recvflags, _, err := syscall.Recvmsg(c.fd(), b, oob, syscall.MSG_DONTWAIT|syscall.MSG_CMSG_CLOEXEC)
-		if err != nil {
-			switch err {
-			case syscall.EAGAIN:
-				continue
-			}
-			return n, nil, err
-		}
+	n, oobn, recvflags, _, err := syscall.Recvmsg(c.fd(), b, oob, 0)
+	if err != nil {
+		return n, nil, nil, err
+	}
 
-		if n == 0 && oobn == 0 {
-			return 0, nil, io.EOF
-		}
+	if n == 0 && oobn == 0 {
+		return 0, nil, nil, io.EOF
+	}
 
-		if recvflags&MSG_NOTIFICATION > 0 && c.notificationHandler != nil {
-			if err := c.notificationHandler(b[:n]); err != nil {
-				return 0, nil, err
-			}
-		} else {
-			var info *SndRcvInfo
-			if oobn > 0 {
-				info, err = parseSndRcvInfo(oob[:oobn])
-			}
-			return n, info, err
+	if recvflags&MSG_NOTIFICATION > 0 {
+		notification := parseNotification(b[:n])
+		return n, nil, notification, nil
+	} else {
+		var info *SndRcvInfo
+		if oobn > 0 {
+			info, err = parseSndRcvInfo(oob[:oobn])
 		}
+		return n, info, nil, err
 	}
 }
 
@@ -165,19 +189,30 @@ func (c *SCTPConn) GetReadBuffer() (int, error) {
 	return syscall.GetsockoptInt(c.fd(), syscall.SOL_SOCKET, syscall.SO_RCVBUF)
 }
 
+func (c *SCTPConn) SetWriteTimeout(tv syscall.Timeval) error {
+	return syscall.SetsockoptTimeval(c.fd(), syscall.SOL_SOCKET, syscall.SO_SNDTIMEO, &tv)
+}
+
+func (c *SCTPConn) SetReadTimeout(tv syscall.Timeval) error {
+	return syscall.SetsockoptTimeval(c.fd(), syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &tv)
+}
+
+func (c *SCTPConn) SetNonBlock(nonBlock bool) error {
+	return syscall.SetNonblock(c.fd(), nonBlock)
+}
+
 // ListenSCTP - start listener on specified address/port
 func ListenSCTP(net string, laddr *SCTPAddr) (*SCTPListener, error) {
-	return ListenSCTPExt(net, laddr, InitMsg{NumOstreams: SCTP_MAX_STREAM},
-		RtoInfo{srtoInitial: RtoInitial, srtoMax: RtoMax, stroMin: RtoMin})
+	return ListenSCTPExt(net, laddr, InitMsg{NumOstreams: SCTP_MAX_STREAM}, nil)
 }
 
 // ListenSCTPExt - start listener on specified address/port with given SCTP options
-func ListenSCTPExt(network string, laddr *SCTPAddr, options InitMsg, rtoInfo RtoInfo) (*SCTPListener, error) {
+func ListenSCTPExt(network string, laddr *SCTPAddr, options InitMsg, rtoInfo *RtoInfo) (*SCTPListener, error) {
 	return listenSCTPExtConfig(network, laddr, options, rtoInfo, nil)
 }
 
 // listenSCTPExtConfig - start listener on specified address/port with given SCTP options and socket configuration
-func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, rtoInfo RtoInfo, control func(network, address string, c syscall.RawConn) error) (*SCTPListener, error) {
+func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, rtoInfo *RtoInfo, control func(network, address string, c syscall.RawConn) error) (*SCTPListener, error) {
 	af, ipv6only := favoriteAddrFamily(network, laddr, nil, "listen")
 	sock, err := syscall.Socket(
 		af,
@@ -197,6 +232,12 @@ func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, rtoIn
 	if err = setDefaultSockopts(sock, af, ipv6only); err != nil {
 		return nil, err
 	}
+
+	// enable REUSEADDR option
+	if err = syscall.SetsockoptInt(sock, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
+		return nil, err
+	}
+
 	if control != nil {
 		rc := rawConn{sockfd: sock}
 		if err = control(network, laddr.String(), rc); err != nil {
@@ -205,9 +246,11 @@ func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, rtoIn
 	}
 
 	//RTO
-	err = setRtoInfo(sock, rtoInfo)
-	if err != nil {
-		return nil, err
+	if rtoInfo != nil {
+		err = setRtoInfo(sock, *rtoInfo)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	err = setInitOpts(sock, options)
@@ -233,29 +276,62 @@ func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, rtoIn
 	if err != nil {
 		return nil, err
 	}
+
+	// epoll will be used in Accept() to avoid busy waiting because of non-blocking socket
+	epfd, err := createEpollForSock(sock)
+	if err != nil {
+		return nil, err
+	}
+
 	return &SCTPListener{
-		fd: sock,
+		fd:   sock,
+		epfd: epfd,
 	}, nil
 }
 
+// createEpollForSock - create an epoll for sock; return an epoll fd if no error
+func createEpollForSock(sock int) (int, error) {
+	epfd, err := syscall.EpollCreate1(syscall.EPOLL_CLOEXEC)
+	if err != nil {
+		return -1, err
+	}
+
+	// close epfd on error
+	defer func() {
+		if err != nil {
+			syscall.Close(epfd)
+		}
+	}()
+
+	event := syscall.EpollEvent{
+		Events: syscall.EPOLLIN,
+		Fd:     int32(sock),
+	}
+	err = syscall.EpollCtl(epfd, syscall.EPOLL_CTL_ADD, sock, &event)
+	if err != nil {
+		return -1, err
+	}
+	return epfd, nil
+}
+
 // AcceptSCTP waits for and returns the next SCTP connection to the listener.
+// it will use EpollWait to wait for a incoming connection then call syscall.Accept4 to accept
 func (ln *SCTPListener) AcceptSCTP() (*SCTPConn, error) {
-	for {
-		syscall.SetsockoptInt(ln.fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
-		fd, _, err := syscall.Accept4(ln.fd, syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC)
-		if err == nil {
-			return NewSCTPConn(fd, nil), err
-		}
-		switch err {
-		case syscall.EAGAIN:
-			// Nonblocking socket with no content in queue
-			continue
-		case syscall.ECONNABORTED:
-			// This meas that a socket on the listen
-			// queue was closed before we Accept()ed it;
-			// try again.
-			continue
-		}
+	var events [1]syscall.EpollEvent
+	n, err := syscall.EpollWait(ln.epfd, events[:], -1)
+	if err != nil {
+		return nil, err
+	}
+
+	if n == 0 {
+		return nil, err
+	}
+
+	if events[0].Fd == int32(ln.fd) {
+		fd, _, err := syscall.Accept4(ln.fd, 0)
+		return NewSCTPConn(fd, nil), err
+	} else {
+		return nil, err
 	}
 }
 
@@ -266,22 +342,22 @@ func (ln *SCTPListener) Accept() (net.Conn, error) {
 
 func (ln *SCTPListener) Close() error {
 	syscall.Shutdown(ln.fd, syscall.SHUT_RDWR)
+	syscall.Close(ln.epfd)
 	return syscall.Close(ln.fd)
 }
 
 // DialSCTP - bind socket to laddr (if given) and connect to raddr
 func DialSCTP(net string, laddr, raddr *SCTPAddr) (*SCTPConn, error) {
-	return DialSCTPExt(net, laddr, raddr, InitMsg{NumOstreams: SCTP_MAX_STREAM},
-		RtoInfo{srtoInitial: RtoInitial, srtoMax: RtoMax, stroMin: RtoMin})
+	return DialSCTPExt(net, laddr, raddr, InitMsg{NumOstreams: SCTP_MAX_STREAM}, nil)
 }
 
 // DialSCTPExt - same as DialSCTP but with given SCTP options
-func DialSCTPExt(network string, laddr, raddr *SCTPAddr, options InitMsg, rtoInfo RtoInfo) (*SCTPConn, error) {
+func DialSCTPExt(network string, laddr, raddr *SCTPAddr, options InitMsg, rtoInfo *RtoInfo) (*SCTPConn, error) {
 	return dialSCTPExtConfig(network, laddr, raddr, options, rtoInfo, nil)
 }
 
 // dialSCTPExtConfig - same as DialSCTP but with given SCTP options and socket configuration
-func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, rtoInfo RtoInfo, control func(network, address string, c syscall.RawConn) error) (*SCTPConn, error) {
+func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, rtoInfo *RtoInfo, control func(network, address string, c syscall.RawConn) error) (*SCTPConn, error) {
 	af, ipv6only := favoriteAddrFamily(network, laddr, raddr, "dial")
 	sock, err := syscall.Socket(
 		af,
@@ -308,7 +384,9 @@ func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, 
 		}
 	}
 	//RTO
-	err = setRtoInfo(sock, rtoInfo)
+	if rtoInfo != nil {
+		err = setRtoInfo(sock, *rtoInfo)
+	}
 
 	err = setInitOpts(sock, options)
 	if err != nil {

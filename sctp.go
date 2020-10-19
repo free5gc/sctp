@@ -84,6 +84,7 @@ const (
 )
 
 type SCTPNotificationType int
+type SCTPAssocID int32
 
 const (
 	SCTP_SN_TYPE_BASE = SCTPNotificationType(iota + (1 << 15))
@@ -133,12 +134,6 @@ const (
 	SCTP_MAX_STREAM = 0xffff
 )
 
-const (
-	RtoInitial = 300
-	RtoMax     = 500
-	RtoMin     = 100
-)
-
 type InitMsg struct {
 	NumOstreams    uint16
 	MaxInstreams   uint16
@@ -146,11 +141,12 @@ type InitMsg struct {
 	MaxInitTimeout uint16
 }
 
+// Retransmission Timeout Parameters defined in RFC 6458 8.1
 type RtoInfo struct {
-	sctpAssoc   int32
-	srtoInitial uint32
-	srtoMax     uint32
-	stroMin     uint32
+	SrtoAssocID int32
+	SrtoInitial uint32
+	SrtoMax     uint32
+	StroMin     uint32
 }
 
 type SndRcvInfo struct {
@@ -233,13 +229,13 @@ func setInitOpts(fd int, options InitMsg) error {
 	return err
 }
 
-func GetRtoInfo(fd int) (error, RtoInfo) {
+func getRtoInfo(fd int) (RtoInfo, error) {
 	var rtoInfo RtoInfo
 	rtolen := unsafe.Sizeof(rtoInfo)
 
 	_, _, err := getsockopt(fd, SCTP_RTOINFO, uintptr(unsafe.Pointer(&rtoInfo)), uintptr(unsafe.Pointer(&rtolen)))
 
-	return err, rtoInfo
+	return rtoInfo, err
 }
 
 func setRtoInfo(fd int, rtoInfo RtoInfo) error {
@@ -414,7 +410,7 @@ func (c *SCTPConn) Write(b []byte) (int, error) {
 }
 
 func (c *SCTPConn) Read(b []byte) (int, error) {
-	n, _, err := c.SCTPRead(b)
+	n, _, _, err := c.SCTPRead(b)
 	if n < 0 {
 		n = 0
 	}
@@ -656,8 +652,9 @@ func (c *SCTPConn) SetWriteDeadline(t time.Time) error {
 }
 
 type SCTPListener struct {
-	fd int
-	m  sync.Mutex
+	fd   int
+	epfd int // fd for epoll
+	m    sync.Mutex
 }
 
 func (ln *SCTPListener) Addr() net.Addr {
@@ -690,7 +687,7 @@ func (c *SCTPSndRcvInfoWrappedConn) Read(b []byte) (int, error) {
 	if len(b) < int(sndRcvInfoSize) {
 		return 0, syscall.EINVAL
 	}
-	n, info, err := c.conn.SCTPRead(b[sndRcvInfoSize:])
+	n, info, _, err := c.conn.SCTPRead(b[sndRcvInfoSize:])
 	if err != nil {
 		return n, err
 	}
@@ -748,7 +745,7 @@ type SocketConfig struct {
 	InitMsg InitMsg
 
 	// RtoInfo
-	RtoInfo RtoInfo
+	RtoInfo *RtoInfo
 }
 
 func (cfg *SocketConfig) Listen(net string, laddr *SCTPAddr) (*SCTPListener, error) {

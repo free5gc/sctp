@@ -151,7 +151,7 @@ func main() {
 				log.Fatalf("failed to write: %v", err)
 			}
 			log.Printf("write: len %d", n)
-			n, info, err = conn.SCTPRead(buf)
+			n, info, _, err = conn.SCTPRead(buf)
 			if err != nil {
 				log.Fatalf("failed to read: %v", err)
 			}

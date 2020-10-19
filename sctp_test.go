@@ -54,9 +54,9 @@ var resolveSCTPAddrTests = []resolveSCTPAddrTest{
 }
 
 var rtoTests = []rtoTest{
-	{RtoInfo{srtoInitial: RtoInitial, srtoMax: RtoMax, stroMin: RtoMin}, RtoInfo{srtoInitial: RtoInitial, srtoMax: RtoMax, stroMin: RtoMin}},
-	{RtoInfo{srtoInitial: 100, srtoMax: 200, stroMin: 200}, RtoInfo{srtoInitial: 100, srtoMax: 200, stroMin: 200}},
-	{RtoInfo{srtoInitial: 400, srtoMax: 400, stroMin: 400}, RtoInfo{srtoInitial: 400, srtoMax: 400, stroMin: 400}},
+	{RtoInfo{SrtoInitial: 3000, SrtoMax: 60000, StroMin: 1000}, RtoInfo{SrtoInitial: 3000, SrtoMax: 60000, StroMin: 1000}},
+	{RtoInfo{SrtoInitial: 100, SrtoMax: 200, StroMin: 200}, RtoInfo{SrtoInitial: 100, SrtoMax: 200, StroMin: 200}},
+	{RtoInfo{SrtoInitial: 400, SrtoMax: 400, StroMin: 400}, RtoInfo{SrtoInitial: 400, SrtoMax: 400, StroMin: 400}},
 }
 
 func TestSCTPAddrString(t *testing.T) {
@@ -195,14 +195,14 @@ func TestSCTPSetRto(t *testing.T) {
 	fails := 0
 	for _, tt := range rtoTests {
 		addr, _ := ResolveSCTPAddr("sctp", "127.0.0.1:0")
-		if listener, err := ListenSCTPExt("sctp", addr, initMsg, tt.inputRto); err != nil {
+		if listener, err := ListenSCTPExt("sctp", addr, initMsg, &tt.inputRto); err != nil {
 			t.Fatalf("close failed: %v", err)
 			return
 		} else {
 			sctpListener = listener
 		}
 		defer sctpListener.Close()
-		err, rtoInfo := GetRtoInfo(sctpListener.fd)
+		rtoInfo, err := getRtoInfo(sctpListener.fd)
 
 		if err != nil {
 			fails++
