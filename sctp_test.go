@@ -23,6 +23,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"unsafe"
 )
 
 type resolveSCTPAddrTest struct {
@@ -35,6 +36,11 @@ type resolveSCTPAddrTest struct {
 type rtoTest struct {
 	inputRto    RtoInfo
 	expectedRto RtoInfo
+}
+
+type assocInfoTest struct {
+	input    AssocInfo
+	expected AssocInfo
 }
 
 var resolveSCTPAddrTests = []resolveSCTPAddrTest{
@@ -57,6 +63,17 @@ var rtoTests = []rtoTest{
 	{RtoInfo{SrtoInitial: 3000, SrtoMax: 60000, StroMin: 1000}, RtoInfo{SrtoInitial: 3000, SrtoMax: 60000, StroMin: 1000}},
 	{RtoInfo{SrtoInitial: 100, SrtoMax: 200, StroMin: 200}, RtoInfo{SrtoInitial: 100, SrtoMax: 200, StroMin: 200}},
 	{RtoInfo{SrtoInitial: 400, SrtoMax: 400, StroMin: 400}, RtoInfo{SrtoInitial: 400, SrtoMax: 400, StroMin: 400}},
+}
+
+var assocInfoTests = []assocInfoTest{
+	{
+		AssocInfo{AssocID: 0, AsocMaxRxt: 2, NumberPeerDestinations: 0, PeerRwnd: 0, LocalRwnd: 0, CookieLife: 100},
+		AssocInfo{AssocID: 0, AsocMaxRxt: 2, NumberPeerDestinations: 0, PeerRwnd: 0, LocalRwnd: 0, CookieLife: 100},
+	},
+	{
+		AssocInfo{AssocID: 0, AsocMaxRxt: 5, NumberPeerDestinations: 0, PeerRwnd: 0, LocalRwnd: 0, CookieLife: 200},
+		AssocInfo{AssocID: 0, AsocMaxRxt: 5, NumberPeerDestinations: 0, PeerRwnd: 0, LocalRwnd: 0, CookieLife: 200},
+	},
 }
 
 func TestSCTPAddrString(t *testing.T) {
@@ -195,7 +212,7 @@ func TestSCTPSetRto(t *testing.T) {
 	fails := 0
 	for _, tt := range rtoTests {
 		addr, _ := ResolveSCTPAddr("sctp", "127.0.0.1:0")
-		if listener, err := ListenSCTPExt("sctp", addr, initMsg, &tt.inputRto); err != nil {
+		if listener, err := ListenSCTPExt("sctp", addr, initMsg, &tt.inputRto, nil); err != nil {
 			t.Fatalf("close failed: %v", err)
 			return
 		} else {
@@ -209,6 +226,40 @@ func TestSCTPSetRto(t *testing.T) {
 		} else {
 			if !reflect.DeepEqual(rtoInfo, tt.expectedRto) {
 				t.Errorf("RTO[0x%x] \t ExpectedRTO[0x%x]\n", rtoInfo, tt.expectedRto)
+			}
+		}
+	}
+}
+
+func getAssocInfo(fd int) (*AssocInfo, error) {
+	info := AssocInfo{}
+	optlen := unsafe.Sizeof(info)
+	_, _, err := getsockopt(fd, SCTP_ASSOCINFO, uintptr(unsafe.Pointer(&info)), uintptr(unsafe.Pointer(&optlen)))
+	if err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
+func TestSctpSetAssocInfo(t *testing.T) {
+	initMsg := InitMsg{NumOstreams: 3, MaxInstreams: 5, MaxAttempts: 4, MaxInitTimeout: 8}
+	fails := 0
+	for _, tt := range assocInfoTests {
+		addr, _ := ResolveSCTPAddr("sctp", "127.0.0.1:0")
+		if listener, err := ListenSCTPExt("sctp", addr, initMsg, nil, &tt.input); err != nil {
+			t.Fatalf("close failed: %v", err)
+			return
+		} else {
+			sctpListener = listener
+		}
+		defer sctpListener.Close()
+		assocInfo, err := getAssocInfo(sctpListener.fd)
+
+		if err != nil {
+			fails++
+		} else {
+			if !reflect.DeepEqual(*assocInfo, tt.expected) {
+				t.Errorf("\nOutput:\t%+v\nExpected:%+v\n", assocInfo, tt.expected)
 			}
 		}
 	}

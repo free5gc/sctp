@@ -149,6 +149,21 @@ type RtoInfo struct {
 	StroMin     uint32
 }
 
+// Association Parameters defined in RFC 6458 8.1
+type AssocInfo struct {
+	AssocID SCTPAssocID
+	// maximum retransmission attempts to make for the association
+	AsocMaxRxt uint16
+	// number of destination addresses that the peer has
+	NumberPeerDestinations uint16
+	// current value of the peer's rwnd (reported in the last selective acknowledgment (SACK)) minus any outstanding data
+	PeerRwnd uint32
+	// the last reported rwnd that was sent to the peer
+	LocalRwnd uint32
+	// the association's cookie life value used when issuing cookies
+	CookieLife uint32
+}
+
 type SndRcvInfo struct {
 	Stream  uint16
 	SSN     uint16
@@ -746,12 +761,15 @@ type SocketConfig struct {
 
 	// RtoInfo
 	RtoInfo *RtoInfo
+
+	// AssocInfo (RFC 6458)
+	AssocInfo *AssocInfo
 }
 
 func (cfg *SocketConfig) Listen(net string, laddr *SCTPAddr) (*SCTPListener, error) {
-	return listenSCTPExtConfig(net, laddr, cfg.InitMsg, cfg.RtoInfo, cfg.Control)
+	return listenSCTPExtConfig(net, laddr, cfg.InitMsg, cfg.RtoInfo, cfg.AssocInfo, cfg.Control)
 }
 
 func (cfg *SocketConfig) Dial(net string, laddr, raddr *SCTPAddr) (*SCTPConn, error) {
-	return dialSCTPExtConfig(net, laddr, raddr, cfg.InitMsg, cfg.RtoInfo, cfg.Control)
+	return dialSCTPExtConfig(net, laddr, raddr, cfg.InitMsg, cfg.RtoInfo, cfg.AssocInfo, cfg.Control)
 }

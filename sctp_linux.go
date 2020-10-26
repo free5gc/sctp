@@ -201,18 +201,56 @@ func (c *SCTPConn) SetNonBlock(nonBlock bool) error {
 	return syscall.SetNonblock(c.fd(), nonBlock)
 }
 
+func (c *SCTPConn) GetRtoInfo() (*RtoInfo, error) {
+	var rtoInfo RtoInfo
+	rtolen := unsafe.Sizeof(rtoInfo)
+	_, _, err := getsockopt(c.fd(), SCTP_RTOINFO, uintptr(unsafe.Pointer(&rtoInfo)), uintptr(unsafe.Pointer(&rtolen)))
+	if err != nil {
+		return nil, err
+	}
+	return &rtoInfo, nil
+}
+
+func (c *SCTPConn) SetRtoInfo(rtoInfo RtoInfo) error {
+	rtolen := unsafe.Sizeof(rtoInfo)
+	_, _, err := setsockopt(c.fd(), SCTP_RTOINFO, uintptr(unsafe.Pointer(&rtoInfo)), uintptr(rtolen))
+	return err
+}
+
+func (c *SCTPConn) GetAssocInfo() (*AssocInfo, error) {
+	info := AssocInfo{}
+	optlen := unsafe.Sizeof(info)
+	_, _, err := getsockopt(c.fd(), SCTP_ASSOCINFO, uintptr(unsafe.Pointer(&info)), uintptr(unsafe.Pointer(&optlen)))
+	if err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
+func (c *SCTPConn) SetAssocInfo(info AssocInfo) error {
+	optlen := unsafe.Sizeof(info)
+	_, _, err := setsockopt(c.fd(), SCTP_ASSOCINFO, uintptr(unsafe.Pointer(&info)), uintptr(optlen))
+	return err
+}
+
+func setAssocInfo(fd int, info AssocInfo) error {
+	optlen := unsafe.Sizeof(info)
+	_, _, err := setsockopt(fd, SCTP_ASSOCINFO, uintptr(unsafe.Pointer(&info)), uintptr(optlen))
+	return err
+}
+
 // ListenSCTP - start listener on specified address/port
 func ListenSCTP(net string, laddr *SCTPAddr) (*SCTPListener, error) {
-	return ListenSCTPExt(net, laddr, InitMsg{NumOstreams: SCTP_MAX_STREAM}, nil)
+	return ListenSCTPExt(net, laddr, InitMsg{NumOstreams: SCTP_MAX_STREAM}, nil, nil)
 }
 
 // ListenSCTPExt - start listener on specified address/port with given SCTP options
-func ListenSCTPExt(network string, laddr *SCTPAddr, options InitMsg, rtoInfo *RtoInfo) (*SCTPListener, error) {
-	return listenSCTPExtConfig(network, laddr, options, rtoInfo, nil)
+func ListenSCTPExt(network string, laddr *SCTPAddr, options InitMsg, rtoInfo *RtoInfo, assocInfo *AssocInfo) (*SCTPListener, error) {
+	return listenSCTPExtConfig(network, laddr, options, rtoInfo, assocInfo, nil)
 }
 
 // listenSCTPExtConfig - start listener on specified address/port with given SCTP options and socket configuration
-func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, rtoInfo *RtoInfo, control func(network, address string, c syscall.RawConn) error) (*SCTPListener, error) {
+func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, rtoInfo *RtoInfo, assocInfo *AssocInfo, control func(network, address string, c syscall.RawConn) error) (*SCTPListener, error) {
 	af, ipv6only := favoriteAddrFamily(network, laddr, nil, "listen")
 	sock, err := syscall.Socket(
 		af,
@@ -248,6 +286,14 @@ func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, rtoIn
 	//RTO
 	if rtoInfo != nil {
 		err = setRtoInfo(sock, *rtoInfo)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// set default association parameters (RFC 6458 8.1.2)
+	if assocInfo != nil {
+		err = setAssocInfo(sock, *assocInfo)
 		if err != nil {
 			return nil, err
 		}
@@ -348,16 +394,16 @@ func (ln *SCTPListener) Close() error {
 
 // DialSCTP - bind socket to laddr (if given) and connect to raddr
 func DialSCTP(net string, laddr, raddr *SCTPAddr) (*SCTPConn, error) {
-	return DialSCTPExt(net, laddr, raddr, InitMsg{NumOstreams: SCTP_MAX_STREAM}, nil)
+	return DialSCTPExt(net, laddr, raddr, InitMsg{NumOstreams: SCTP_MAX_STREAM}, nil, nil)
 }
 
 // DialSCTPExt - same as DialSCTP but with given SCTP options
-func DialSCTPExt(network string, laddr, raddr *SCTPAddr, options InitMsg, rtoInfo *RtoInfo) (*SCTPConn, error) {
-	return dialSCTPExtConfig(network, laddr, raddr, options, rtoInfo, nil)
+func DialSCTPExt(network string, laddr, raddr *SCTPAddr, options InitMsg, rtoInfo *RtoInfo, assocInfo *AssocInfo) (*SCTPConn, error) {
+	return dialSCTPExtConfig(network, laddr, raddr, options, rtoInfo, assocInfo, nil)
 }
 
 // dialSCTPExtConfig - same as DialSCTP but with given SCTP options and socket configuration
-func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, rtoInfo *RtoInfo, control func(network, address string, c syscall.RawConn) error) (*SCTPConn, error) {
+func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, rtoInfo *RtoInfo, assocInfo *AssocInfo, control func(network, address string, c syscall.RawConn) error) (*SCTPConn, error) {
 	af, ipv6only := favoriteAddrFamily(network, laddr, raddr, "dial")
 	sock, err := syscall.Socket(
 		af,
@@ -383,9 +429,21 @@ func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, 
 			return nil, err
 		}
 	}
+
 	//RTO
 	if rtoInfo != nil {
 		err = setRtoInfo(sock, *rtoInfo)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// AssocInfo
+	if assocInfo != nil {
+		err = setAssocInfo(sock, *assocInfo)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	err = setInitOpts(sock, options)
