@@ -244,18 +244,36 @@ func setInitOpts(fd int, options InitMsg) error {
 	return err
 }
 
-func getRtoInfo(fd int) (RtoInfo, error) {
-	var rtoInfo RtoInfo
+func getRtoInfo(fd int) (*RtoInfo, error) {
+	rtoInfo := RtoInfo{}
 	rtolen := unsafe.Sizeof(rtoInfo)
-
 	_, _, err := getsockopt(fd, SCTP_RTOINFO, uintptr(unsafe.Pointer(&rtoInfo)), uintptr(unsafe.Pointer(&rtolen)))
+	if err != nil {
+		return nil, err
+	}
 
-	return rtoInfo, err
+	return &rtoInfo, err
 }
 
 func setRtoInfo(fd int, rtoInfo RtoInfo) error {
 	rtolen := unsafe.Sizeof(rtoInfo)
 	_, _, err := setsockopt(fd, SCTP_RTOINFO, uintptr(unsafe.Pointer(&rtoInfo)), uintptr(rtolen))
+	return err
+}
+
+func getAssocInfo(fd int) (*AssocInfo, error) {
+	info := AssocInfo{}
+	optlen := unsafe.Sizeof(info)
+	_, _, err := getsockopt(fd, SCTP_ASSOCINFO, uintptr(unsafe.Pointer(&info)), uintptr(unsafe.Pointer(&optlen)))
+	if err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
+func setAssocInfo(fd int, info AssocInfo) error {
+	optlen := unsafe.Sizeof(info)
+	_, _, err := setsockopt(fd, SCTP_ASSOCINFO, uintptr(unsafe.Pointer(&info)), uintptr(optlen))
 	return err
 }
 

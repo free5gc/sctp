@@ -202,41 +202,19 @@ func (c *SCTPConn) SetNonBlock(nonBlock bool) error {
 }
 
 func (c *SCTPConn) GetRtoInfo() (*RtoInfo, error) {
-	var rtoInfo RtoInfo
-	rtolen := unsafe.Sizeof(rtoInfo)
-	_, _, err := getsockopt(c.fd(), SCTP_RTOINFO, uintptr(unsafe.Pointer(&rtoInfo)), uintptr(unsafe.Pointer(&rtolen)))
-	if err != nil {
-		return nil, err
-	}
-	return &rtoInfo, nil
+	return getRtoInfo(c.fd())
 }
 
 func (c *SCTPConn) SetRtoInfo(rtoInfo RtoInfo) error {
-	rtolen := unsafe.Sizeof(rtoInfo)
-	_, _, err := setsockopt(c.fd(), SCTP_RTOINFO, uintptr(unsafe.Pointer(&rtoInfo)), uintptr(rtolen))
-	return err
+	return setRtoInfo(c.fd(), rtoInfo)
 }
 
 func (c *SCTPConn) GetAssocInfo() (*AssocInfo, error) {
-	info := AssocInfo{}
-	optlen := unsafe.Sizeof(info)
-	_, _, err := getsockopt(c.fd(), SCTP_ASSOCINFO, uintptr(unsafe.Pointer(&info)), uintptr(unsafe.Pointer(&optlen)))
-	if err != nil {
-		return nil, err
-	}
-	return &info, nil
+	return getAssocInfo(c.fd())
 }
 
 func (c *SCTPConn) SetAssocInfo(info AssocInfo) error {
-	optlen := unsafe.Sizeof(info)
-	_, _, err := setsockopt(c.fd(), SCTP_ASSOCINFO, uintptr(unsafe.Pointer(&info)), uintptr(optlen))
-	return err
-}
-
-func setAssocInfo(fd int, info AssocInfo) error {
-	optlen := unsafe.Sizeof(info)
-	_, _, err := setsockopt(fd, SCTP_ASSOCINFO, uintptr(unsafe.Pointer(&info)), uintptr(optlen))
-	return err
+	return setAssocInfo(c.fd(), info)
 }
 
 // ListenSCTP - start listener on specified address/port

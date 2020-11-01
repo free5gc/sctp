@@ -23,7 +23,6 @@ import (
 	"sync"
 	"syscall"
 	"testing"
-	"unsafe"
 )
 
 type resolveSCTPAddrTest struct {
@@ -224,21 +223,11 @@ func TestSCTPSetRto(t *testing.T) {
 		if err != nil {
 			fails++
 		} else {
-			if !reflect.DeepEqual(rtoInfo, tt.expectedRto) {
+			if !reflect.DeepEqual(*rtoInfo, tt.expectedRto) {
 				t.Errorf("RTO[0x%x] \t ExpectedRTO[0x%x]\n", rtoInfo, tt.expectedRto)
 			}
 		}
 	}
-}
-
-func getAssocInfo(fd int) (*AssocInfo, error) {
-	info := AssocInfo{}
-	optlen := unsafe.Sizeof(info)
-	_, _, err := getsockopt(fd, SCTP_ASSOCINFO, uintptr(unsafe.Pointer(&info)), uintptr(unsafe.Pointer(&optlen)))
-	if err != nil {
-		return nil, err
-	}
-	return &info, nil
 }
 
 func TestSctpSetAssocInfo(t *testing.T) {
