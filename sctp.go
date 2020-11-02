@@ -149,6 +149,21 @@ type RtoInfo struct {
 	StroMin     uint32
 }
 
+// Association Parameters defined in RFC 6458 8.1
+type AssocInfo struct {
+	AssocID SCTPAssocID
+	// maximum retransmission attempts to make for the association
+	AsocMaxRxt uint16
+	// number of destination addresses that the peer has
+	NumberPeerDestinations uint16
+	// current value of the peer's rwnd (reported in the last selective acknowledgment (SACK)) minus any outstanding data
+	PeerRwnd uint32
+	// the last reported rwnd that was sent to the peer
+	LocalRwnd uint32
+	// the association's cookie life value used when issuing cookies
+	CookieLife uint32
+}
+
 type SndRcvInfo struct {
 	Stream  uint16
 	SSN     uint16
@@ -229,18 +244,36 @@ func setInitOpts(fd int, options InitMsg) error {
 	return err
 }
 
-func getRtoInfo(fd int) (RtoInfo, error) {
-	var rtoInfo RtoInfo
+func getRtoInfo(fd int) (*RtoInfo, error) {
+	rtoInfo := RtoInfo{}
 	rtolen := unsafe.Sizeof(rtoInfo)
-
 	_, _, err := getsockopt(fd, SCTP_RTOINFO, uintptr(unsafe.Pointer(&rtoInfo)), uintptr(unsafe.Pointer(&rtolen)))
+	if err != nil {
+		return nil, err
+	}
 
-	return rtoInfo, err
+	return &rtoInfo, err
 }
 
 func setRtoInfo(fd int, rtoInfo RtoInfo) error {
 	rtolen := unsafe.Sizeof(rtoInfo)
 	_, _, err := setsockopt(fd, SCTP_RTOINFO, uintptr(unsafe.Pointer(&rtoInfo)), uintptr(rtolen))
+	return err
+}
+
+func getAssocInfo(fd int) (*AssocInfo, error) {
+	info := AssocInfo{}
+	optlen := unsafe.Sizeof(info)
+	_, _, err := getsockopt(fd, SCTP_ASSOCINFO, uintptr(unsafe.Pointer(&info)), uintptr(unsafe.Pointer(&optlen)))
+	if err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
+func setAssocInfo(fd int, info AssocInfo) error {
+	optlen := unsafe.Sizeof(info)
+	_, _, err := setsockopt(fd, SCTP_ASSOCINFO, uintptr(unsafe.Pointer(&info)), uintptr(optlen))
 	return err
 }
 
@@ -746,12 +779,15 @@ type SocketConfig struct {
 
 	// RtoInfo
 	RtoInfo *RtoInfo
+
+	// AssocInfo (RFC 6458)
+	AssocInfo *AssocInfo
 }
 
 func (cfg *SocketConfig) Listen(net string, laddr *SCTPAddr) (*SCTPListener, error) {
-	return listenSCTPExtConfig(net, laddr, cfg.InitMsg, cfg.RtoInfo, cfg.Control)
+	return listenSCTPExtConfig(net, laddr, cfg.InitMsg, cfg.RtoInfo, cfg.AssocInfo, cfg.Control)
 }
 
 func (cfg *SocketConfig) Dial(net string, laddr, raddr *SCTPAddr) (*SCTPConn, error) {
-	return dialSCTPExtConfig(net, laddr, raddr, cfg.InitMsg, cfg.RtoInfo, cfg.Control)
+	return dialSCTPExtConfig(net, laddr, raddr, cfg.InitMsg, cfg.RtoInfo, cfg.AssocInfo, cfg.Control)
 }
