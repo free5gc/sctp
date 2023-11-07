@@ -11,19 +11,19 @@ import (
 	"git.cs.nctu.edu.tw/calee/sctp"
 )
 
-func serveClient(conn net.Conn, bufsize int) error {
+func serveClient(conn net.Conn, bufsize int) {
 	for {
 		buf := make([]byte, bufsize+128) // add overhead of SCTPSndRcvInfoWrappedConn
 		n, err := conn.Read(buf)
 		if err != nil {
 			log.Printf("read failed: %v", err)
-			return err
+			break
 		}
 		log.Printf("read: %d", n)
 		n, err = conn.Write(buf[:n])
 		if err != nil {
 			log.Printf("write failed: %v", err)
-			return err
+			break
 		}
 		log.Printf("write: %d", n)
 	}
@@ -69,7 +69,7 @@ func main() {
 			if err != nil {
 				log.Fatalf("failed to accept: %v", err)
 			}
-			log.Printf("Accepted Connection from RemoteAddr: %s", conn.RemoteAddr())
+			log.Printf("%s accepted connection from remote: %s", conn.LocalAddr(), conn.RemoteAddr())
 			wconn := sctp.NewSCTPSndRcvInfoWrappedConn(conn.(*sctp.SCTPConn))
 			if *sndbuf != 0 {
 				err = wconn.SetWriteBuffer(*sndbuf)

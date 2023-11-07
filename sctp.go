@@ -424,18 +424,28 @@ func SCTPBind(fd int, addr *SCTPAddr, flags int) error {
 type SCTPConn struct {
 	_fd                 int32
 	notificationHandler NotificationHandler
+	laddr               net.Addr
+	raddr               net.Addr
 }
 
 func (c *SCTPConn) fd() int {
 	return int(atomic.LoadInt32(&c._fd))
 }
 
-func NewSCTPConn(fd int, handler NotificationHandler) *SCTPConn {
+func NewSCTPConn(fd int, handler NotificationHandler) (*SCTPConn, error) {
+	var laddr, raddr net.Addr
+	var err error
+
+	laddr, err = sctpGetAddrs(fd, 0, SCTP_GET_LOCAL_ADDRS)
+	raddr, err = sctpGetAddrs(fd, 0, SCTP_GET_PEER_ADDRS)
+
 	conn := &SCTPConn{
 		_fd:                 int32(fd),
 		notificationHandler: handler,
+		laddr: laddr,
+		raddr: raddr,
 	}
-	return conn
+	return conn, err
 }
 
 func (c *SCTPConn) Write(b []byte) (int, error) {
@@ -641,19 +651,11 @@ func (c *SCTPConn) SCTPRemoteAddr(id int) (*SCTPAddr, error) {
 }
 
 func (c *SCTPConn) LocalAddr() net.Addr {
-	addr, err := sctpGetAddrs(c.fd(), 0, SCTP_GET_LOCAL_ADDRS)
-	if err != nil {
-		return nil
-	}
-	return addr
+	return c.laddr
 }
 
 func (c *SCTPConn) RemoteAddr() net.Addr {
-	addr, err := sctpGetAddrs(c.fd(), 0, SCTP_GET_PEER_ADDRS)
-	if err != nil {
-		return nil
-	}
-	return addr
+	return c.raddr
 }
 
 func (c *SCTPConn) PeelOff(id int) (*SCTPConn, error) {
