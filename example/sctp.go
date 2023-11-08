@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"git.cs.nctu.edu.tw/calee/sctp"
+	"github.com/free5gc/sctp"
 )
 
 func serveClient(conn net.Conn, bufsize int) {
