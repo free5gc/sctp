@@ -1,3 +1,3 @@
-module git.cs.nctu.edu.tw/calee/sctp
+module github.com/free5gc/sctp
 
 go 1.14

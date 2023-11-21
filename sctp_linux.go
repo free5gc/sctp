@@ -1,4 +1,5 @@
-// +build linux,!386
+//go:build linux && !386
+
 // Copyright 2019 Wataru Ishida. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -353,7 +354,10 @@ func (ln *SCTPListener) AcceptSCTP() (*SCTPConn, error) {
 
 	if events[0].Fd == int32(ln.fd) {
 		fd, _, err := syscall.Accept4(ln.fd, 0)
-		return NewSCTPConn(fd, nil), err
+		if err != nil {
+			return nil, err
+		}
+		return NewSCTPConn(fd, nil)
 	} else {
 		return nil, err
 	}
@@ -446,5 +450,5 @@ func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, 
 	if err != nil {
 		return nil, err
 	}
-	return NewSCTPConn(sock, nil), nil
+	return NewSCTPConn(sock, nil)
 }
