@@ -17,26 +17,26 @@ func serveClient(conn net.Conn, bufsize int) {
 		n, err := conn.Read(buf)
 		if err != nil {
 			log.Printf("read failed: %v", err)
-			break
+			return err
 		}
 		log.Printf("read: %d", n)
 		n, err = conn.Write(buf[:n])
 		if err != nil {
 			log.Printf("write failed: %v", err)
-			break
+			return err
 		}
 		log.Printf("write: %d", n)
 	}
 }
 
 func main() {
-	var server = flag.Bool("server", false, "")
-	var ip = flag.String("ip", "0.0.0.0", "")
-	var port = flag.Int("port", 0, "")
-	var lport = flag.Int("lport", 0, "")
-	var bufsize = flag.Int("bufsize", 256, "")
-	var sndbuf = flag.Int("sndbuf", 0, "")
-	var rcvbuf = flag.Int("rcvbuf", 0, "")
+	server := flag.Bool("server", false, "")
+	ip := flag.String("ip", "0.0.0.0", "")
+	port := flag.Int("port", 0, "")
+	lport := flag.Int("lport", 0, "")
+	bufsize := flag.Int("bufsize", 256, "")
+	sndbuf := flag.Int("sndbuf", 0, "")
+	rcvbuf := flag.Int("rcvbuf", 0, "")
 
 	flag.Parse()
 
@@ -65,11 +65,11 @@ func main() {
 		log.Printf("Listen on %s", ln.Addr())
 
 		for {
-			conn, err := ln.Accept()
+			conn, err := ln.Accept(1000)
 			if err != nil {
 				log.Fatalf("failed to accept: %v", err)
 			}
-			log.Printf("%s accepted connection from remote: %s", conn.LocalAddr(), conn.RemoteAddr())
+			log.Printf("Accepted Connection from RemoteAddr: %s", conn.RemoteAddr())
 			wconn := sctp.NewSCTPSndRcvInfoWrappedConn(conn.(*sctp.SCTPConn))
 			if *sndbuf != 0 {
 				err = wconn.SetWriteBuffer(*sndbuf)
@@ -95,7 +95,6 @@ func main() {
 
 			go serveClient(wconn, *bufsize)
 		}
-
 	} else {
 		var laddr *sctp.SCTPAddr
 		if *lport != 0 {
