@@ -1,4 +1,5 @@
 //go:build linux && !386
+// +build linux,!386
 
 // Copyright 2019 Wataru Ishida. All rights reserved.
 //
@@ -18,15 +19,18 @@
 package sctp
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"sync/atomic"
 	"syscall"
 	"unsafe"
+
+	"runtime"
 )
 
 func setsockopt(fd int, optname, optval, optlen uintptr) (uintptr, uintptr, error) {
-	// FIXME: syscall.SYS_SETSOCKOPT is undefined on 386
+	// NOTE: syscall.SYS_SETSOCKOPT is undefined on 386
 	r0, r1, errno := syscall.Syscall6(syscall.SYS_SETSOCKOPT,
 		uintptr(fd),
 		SOL_SCTP,
@@ -41,7 +45,10 @@ func setsockopt(fd int, optname, optval, optlen uintptr) (uintptr, uintptr, erro
 }
 
 func getsockopt(fd int, optname, optval, optlen uintptr) (uintptr, uintptr, error) {
-	// FIXME: syscall.SYS_GETSOCKOPT is undefined on 386
+	if runtime.GOARCH == "s390x" {
+		optlen = uintptr(unsafe.Pointer(&optlen))
+	}
+	// NOTE: syscall.SYS_GETSOCKOPT is undefined on 386
 	r0, r1, errno := syscall.Syscall6(syscall.SYS_GETSOCKOPT,
 		uintptr(fd),
 		SOL_SCTP,
@@ -166,8 +173,14 @@ func (c *SCTPConn) Close() error {
 			info := &SndRcvInfo{
 				Flags: SCTP_EOF,
 			}
-			c.SCTPWrite(nil, info)
-			syscall.Shutdown(int(fd), syscall.SHUT_RDWR)
+			_, err := c.SCTPWrite(nil, info)
+			if err != nil {
+				fmt.Printf("SCTPConn: SCTPWrite failed %v\n", err)
+			}
+			err = syscall.Shutdown(int(fd), syscall.SHUT_RDWR)
+			if err != nil {
+				fmt.Printf("SCTPConn: Shutdown fd failed %v\n", err)
+			}
 			return syscall.Close(int(fd))
 		}
 	}
@@ -218,18 +231,41 @@ func (c *SCTPConn) SetAssocInfo(info AssocInfo) error {
 	return setAssocInfo(c.fd(), info)
 }
 
+func (c *SCTPConn) GetMaxSegSize() (*int, error) {
+	return getMaxSegSize(c.fd())
+}
+
+func (c *SCTPConn) SetMaxSegSize(size int) error {
+	return setMaxSegSize(c.fd(), size)
+}
+
 // ListenSCTP - start listener on specified address/port
 func ListenSCTP(net string, laddr *SCTPAddr) (*SCTPListener, error) {
-	return ListenSCTPExt(net, laddr, InitMsg{NumOstreams: SCTP_MAX_STREAM}, nil, nil)
+	return ListenSCTPExt(net, laddr, InitMsg{NumOstreams: SCTP_MAX_STREAM}, nil, nil, SCTP_DEFAULT_MAXSEG)
 }
 
 // ListenSCTPExt - start listener on specified address/port with given SCTP options
-func ListenSCTPExt(network string, laddr *SCTPAddr, options InitMsg, rtoInfo *RtoInfo, assocInfo *AssocInfo) (*SCTPListener, error) {
-	return listenSCTPExtConfig(network, laddr, options, rtoInfo, assocInfo, nil)
+func ListenSCTPExt(
+	network string,
+	laddr *SCTPAddr,
+	options InitMsg,
+	rtoInfo *RtoInfo,
+	assocInfo *AssocInfo,
+	maxSeg int,
+) (*SCTPListener, error) {
+	return listenSCTPExtConfig(network, laddr, options, rtoInfo, assocInfo, maxSeg, nil)
 }
 
 // listenSCTPExtConfig - start listener on specified address/port with given SCTP options and socket configuration
-func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, rtoInfo *RtoInfo, assocInfo *AssocInfo, control func(network, address string, c syscall.RawConn) error) (*SCTPListener, error) {
+func listenSCTPExtConfig(
+	network string,
+	laddr *SCTPAddr,
+	options InitMsg,
+	rtoInfo *RtoInfo,
+	assocInfo *AssocInfo,
+	maxSeg int,
+	control func(network, address string, c syscall.RawConn) error,
+) (*SCTPListener, error) {
 	af, ipv6only := favoriteAddrFamily(network, laddr, nil, "listen")
 	sock, err := syscall.Socket(
 		af,
@@ -243,7 +279,10 @@ func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, rtoIn
 	// close socket on error
 	defer func() {
 		if err != nil {
-			syscall.Close(sock)
+			err2 := syscall.Close(sock)
+			if err2 != nil {
+				fmt.Printf("listenSCTPExtConfig: close sock failed %v", err2)
+			}
 		}
 	}()
 	if err = setDefaultSockopts(sock, af, ipv6only); err != nil {
@@ -262,10 +301,17 @@ func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, rtoIn
 		}
 	}
 
-	//RTO
+	// RTO
 	if rtoInfo != nil {
 		err = setRtoInfo(sock, *rtoInfo)
 		if err != nil {
+			return nil, err
+		}
+	}
+
+	// MAXSEG
+	if maxSeg > 0 {
+		if err = setMaxSegSize(sock, maxSeg); err != nil {
 			return nil, err
 		}
 	}
@@ -292,7 +338,7 @@ func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, rtoIn
 				laddr.IPAddrs = append(laddr.IPAddrs, net.IPAddr{IP: net.IPv6zero})
 			}
 		}
-		err := SCTPBind(sock, laddr, SCTP_BINDX_ADD_ADDR)
+		err = SCTPBind(sock, laddr, SCTP_BINDX_ADD_ADDR)
 		if err != nil {
 			return nil, err
 		}
@@ -309,8 +355,9 @@ func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, rtoIn
 	}
 
 	return &SCTPListener{
-		fd:   sock,
-		epfd: epfd,
+		fd:     sock,
+		epfd:   epfd,
+		cancel: make(chan struct{}),
 	}, nil
 }
 
@@ -324,7 +371,10 @@ func createEpollForSock(sock int) (int, error) {
 	// close epfd on error
 	defer func() {
 		if err != nil {
-			syscall.Close(epfd)
+			err2 := syscall.Close(epfd)
+			if err2 != nil {
+				fmt.Printf("listenSCTPExtConfig: close sock failed %v", err2)
+			}
 		}
 	}()
 
@@ -339,53 +389,102 @@ func createEpollForSock(sock int) (int, error) {
 	return epfd, nil
 }
 
+func (ln *SCTPListener) IsStopped() bool {
+	return ln.isStopped.Load()
+}
+
 // AcceptSCTP waits for and returns the next SCTP connection to the listener.
 // it will use EpollWait to wait for a incoming connection then call syscall.Accept4 to accept
-func (ln *SCTPListener) AcceptSCTP() (*SCTPConn, error) {
+// user can set timeout for cancel to be done if SCTPListener.Close() is execulated
+func (ln *SCTPListener) AcceptSCTP(timeout int) (*SCTPConn, error) {
 	var events [1]syscall.EpollEvent
-	n, err := syscall.EpollWait(ln.epfd, events[:], -1)
-	if err != nil {
-		return nil, err
-	}
+	for {
+		select {
+		case <-ln.cancel:
+			ln.isStopped.Store(true)
+			return nil, nil // Exit signal received, return with no error.
+		default:
+			n, err := syscall.EpollWait(ln.epfd, events[:], timeout)
+			if err != nil {
+				if err == syscall.EBADF {
+					ln.isStopped.Store(true)
+					return nil, nil // EpollWait() was canceled, return with no error.
+				}
+				return nil, err // Other error occurred, return the error.
+			}
 
-	if n == 0 {
-		return nil, err
-	}
+			if n == 0 {
+				continue
+			}
 
-	if events[0].Fd == int32(ln.fd) {
-		fd, _, err := syscall.Accept4(ln.fd, 0)
-		if err != nil {
-			return nil, err
+			if events[0].Fd == int32(ln.fd) {
+				fd, _, err := syscall.Accept4(ln.fd, 0)
+				return NewSCTPConn(fd, nil), err
+			}
 		}
-		return NewSCTPConn(fd, nil)
-	} else {
-		return nil, err
 	}
 }
 
 // Accept waits for and returns the next connection connection to the listener.
-func (ln *SCTPListener) Accept() (net.Conn, error) {
-	return ln.AcceptSCTP()
+func (ln *SCTPListener) Accept(timeout int) (net.Conn, error) {
+	return ln.AcceptSCTP(timeout)
 }
 
 func (ln *SCTPListener) Close() error {
-	syscall.Shutdown(ln.fd, syscall.SHUT_RDWR)
-	syscall.Close(ln.epfd)
-	return syscall.Close(ln.fd)
+	err := syscall.Shutdown(ln.fd, syscall.SHUT_RDWR)
+	if err != nil {
+		fmt.Printf("SCTP: Failed to shutdown fd %v\n", err)
+	}
+	err = syscall.Close(ln.epfd)
+	if err != nil {
+		fmt.Printf("SCTP: Failed to close epfd %v\n", err)
+	}
+	err = syscall.Close(ln.fd)
+	if err != nil {
+		fmt.Printf("SCTP: Failed to close fd %v\n", err)
+	}
+	select {
+	case ln.cancel <- struct{}{}:
+	default:
+	}
+	return nil
 }
 
 // DialSCTP - bind socket to laddr (if given) and connect to raddr
 func DialSCTP(net string, laddr, raddr *SCTPAddr) (*SCTPConn, error) {
-	return DialSCTPExt(net, laddr, raddr, InitMsg{NumOstreams: SCTP_MAX_STREAM}, nil, nil)
+	return DialSCTPExt(
+		net,
+		laddr,
+		raddr,
+		InitMsg{NumOstreams: SCTP_MAX_STREAM},
+		nil,
+		nil,
+		SCTP_DEFAULT_MAXSEG,
+	)
 }
 
 // DialSCTPExt - same as DialSCTP but with given SCTP options
-func DialSCTPExt(network string, laddr, raddr *SCTPAddr, options InitMsg, rtoInfo *RtoInfo, assocInfo *AssocInfo) (*SCTPConn, error) {
-	return dialSCTPExtConfig(network, laddr, raddr, options, rtoInfo, assocInfo, nil)
+func DialSCTPExt(
+	network string,
+	laddr, raddr *SCTPAddr,
+	options InitMsg,
+	rtoInfo *RtoInfo,
+	assocInfo *AssocInfo,
+	maxSeg int,
+) (*SCTPConn, error) {
+	return dialSCTPExtConfig(network, laddr, raddr, options, rtoInfo, assocInfo, maxSeg, nil)
 }
 
 // dialSCTPExtConfig - same as DialSCTP but with given SCTP options and socket configuration
-func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, rtoInfo *RtoInfo, assocInfo *AssocInfo, control func(network, address string, c syscall.RawConn) error) (*SCTPConn, error) {
+func dialSCTPExtConfig(
+	network string,
+	laddr, raddr *SCTPAddr,
+	options InitMsg,
+	rtoInfo *RtoInfo,
+	assocInfo *AssocInfo,
+	maxSeg int,
+	control func(network, address string, c syscall.RawConn) error,
+) (*SCTPConn, error) {
 	af, ipv6only := favoriteAddrFamily(network, laddr, raddr, "dial")
 	sock, err := syscall.Socket(
 		af,
@@ -399,7 +498,10 @@ func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, 
 	// close socket on error
 	defer func() {
 		if err != nil {
-			syscall.Close(sock)
+			err2 := syscall.Close(sock)
+			if err2 != nil {
+				fmt.Printf("listenSCTPExtConfig: close sock failed %v", err2)
+			}
 		}
 	}()
 	if err = setDefaultSockopts(sock, af, ipv6only); err != nil {
@@ -412,7 +514,7 @@ func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, 
 		}
 	}
 
-	//RTO
+	// RTO
 	if rtoInfo != nil {
 		err = setRtoInfo(sock, *rtoInfo)
 		if err != nil {
@@ -424,6 +526,13 @@ func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, 
 	if assocInfo != nil {
 		err = setAssocInfo(sock, *assocInfo)
 		if err != nil {
+			return nil, err
+		}
+	}
+
+	// MAXSEG
+	if maxSeg > 0 {
+		if err = setMaxSegSize(sock, maxSeg); err != nil {
 			return nil, err
 		}
 	}
@@ -441,14 +550,26 @@ func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, 
 				laddr.IPAddrs = append(laddr.IPAddrs, net.IPAddr{IP: net.IPv6zero})
 			}
 		}
-		err := SCTPBind(sock, laddr, SCTP_BINDX_ADD_ADDR)
+		err = SCTPBind(sock, laddr, SCTP_BINDX_ADD_ADDR)
 		if err != nil {
 			return nil, err
 		}
 	}
 	_, err = SCTPConnect(sock, raddr)
-	if err != nil {
+	switch err {
+	/* Asynchronous preemption introduced in go1.14 can allow syscalls to be preempted with EINTR errors.
+	 * Upon preemption, SA_RESTART may lead getsockopt to execute twice, which leads to
+	 * the return of EISCONN, EALREADY, or EINPROGRESS on the previously connected socket.
+	 * We still return the socket fd, but preserve the error and let the client-side decide
+	 * whether these errors should be deemed as error or not.
+	 */
+	case syscall.EISCONN, syscall.EALREADY, syscall.EINPROGRESS:
+		retErr := err
+		err = nil // Prevent socket close by defer function on these errors
+		return NewSCTPConn(sock, nil), retErr
+	case nil:
+		return NewSCTPConn(sock, nil), nil
+	default:
 		return nil, err
 	}
-	return NewSCTPConn(sock, nil)
 }

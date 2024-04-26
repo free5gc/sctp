@@ -27,6 +27,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/pkg/errors"
 )
 
 const (
@@ -83,8 +85,10 @@ const (
 	SCTP_EVENT_ALL = SCTP_EVENT_DATA_IO | SCTP_EVENT_ASSOCIATION | SCTP_EVENT_ADDRESS | SCTP_EVENT_SEND_FAILURE | SCTP_EVENT_PEER_ERROR | SCTP_EVENT_SHUTDOWN | SCTP_EVENT_PARTIAL_DELIVERY | SCTP_EVENT_ADAPTATION_LAYER | SCTP_EVENT_AUTHENTICATION | SCTP_EVENT_SENDER_DRY
 )
 
-type SCTPNotificationType int
-type SCTPAssocID int32
+type (
+	SCTPNotificationType int
+	SCTPAssocID          int32
+)
 
 const (
 	SCTP_SN_TYPE_BASE = SCTPNotificationType(iota + (1 << 15))
@@ -131,7 +135,8 @@ const (
 )
 
 const (
-	SCTP_MAX_STREAM = 0xffff
+	SCTP_MAX_STREAM     = 0xffff
+	SCTP_DEFAULT_MAXSEG = 0
 )
 
 type InitMsg struct {
@@ -162,6 +167,11 @@ type AssocInfo struct {
 	LocalRwnd uint32
 	// the association's cookie life value used when issuing cookies
 	CookieLife uint32
+}
+
+type AssocVal struct {
+	AssocID  SCTPAssocID
+	AssocVal uint32
 }
 
 type SndRcvInfo struct {
@@ -207,8 +217,10 @@ const (
 	SCTP_CANT_STR_ASSOC
 )
 
-var nativeEndian binary.ByteOrder
-var sndRcvInfoSize uintptr
+var (
+	nativeEndian   binary.ByteOrder
+	sndRcvInfoSize uintptr
+)
 
 func init() {
 	i := uint16(1)
@@ -217,13 +229,16 @@ func init() {
 	} else {
 		nativeEndian = binary.LittleEndian
 	}
-	info := SndRcvInfo{}
+	var info SndRcvInfo
 	sndRcvInfoSize = unsafe.Sizeof(info)
 }
 
 func toBuf(v interface{}) []byte {
 	var buf bytes.Buffer
-	binary.Write(&buf, nativeEndian, v)
+	err := binary.Write(&buf, nativeEndian, v)
+	if err != nil {
+		fmt.Printf("toBuf: Failed when writing to buffer %v\n", err)
+	}
 	return buf.Bytes()
 }
 
@@ -240,14 +255,19 @@ var ntohs = htons
 // see https://tools.ietf.org/html/rfc4960#page-25
 func setInitOpts(fd int, options InitMsg) error {
 	optlen := unsafe.Sizeof(options)
-	_, _, err := setsockopt(fd, SCTP_INITMSG, uintptr(unsafe.Pointer(&options)), uintptr(optlen))
+	_, _, err := setsockopt(fd, SCTP_INITMSG, uintptr(unsafe.Pointer(&options)), optlen)
 	return err
 }
 
 func getRtoInfo(fd int) (*RtoInfo, error) {
 	rtoInfo := RtoInfo{}
 	rtolen := unsafe.Sizeof(rtoInfo)
-	_, _, err := getsockopt(fd, SCTP_RTOINFO, uintptr(unsafe.Pointer(&rtoInfo)), uintptr(unsafe.Pointer(&rtolen)))
+	_, _, err := getsockopt(
+		fd,
+		SCTP_RTOINFO,
+		uintptr(unsafe.Pointer(&rtoInfo)),
+		uintptr(unsafe.Pointer(&rtolen)),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -257,14 +277,19 @@ func getRtoInfo(fd int) (*RtoInfo, error) {
 
 func setRtoInfo(fd int, rtoInfo RtoInfo) error {
 	rtolen := unsafe.Sizeof(rtoInfo)
-	_, _, err := setsockopt(fd, SCTP_RTOINFO, uintptr(unsafe.Pointer(&rtoInfo)), uintptr(rtolen))
+	_, _, err := setsockopt(fd, SCTP_RTOINFO, uintptr(unsafe.Pointer(&rtoInfo)), rtolen)
 	return err
 }
 
 func getAssocInfo(fd int) (*AssocInfo, error) {
 	info := AssocInfo{}
 	optlen := unsafe.Sizeof(info)
-	_, _, err := getsockopt(fd, SCTP_ASSOCINFO, uintptr(unsafe.Pointer(&info)), uintptr(unsafe.Pointer(&optlen)))
+	_, _, err := getsockopt(
+		fd,
+		SCTP_ASSOCINFO,
+		uintptr(unsafe.Pointer(&info)),
+		uintptr(unsafe.Pointer(&optlen)),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -273,12 +298,36 @@ func getAssocInfo(fd int) (*AssocInfo, error) {
 
 func setAssocInfo(fd int, info AssocInfo) error {
 	optlen := unsafe.Sizeof(info)
-	_, _, err := setsockopt(fd, SCTP_ASSOCINFO, uintptr(unsafe.Pointer(&info)), uintptr(optlen))
+	_, _, err := setsockopt(fd, SCTP_ASSOCINFO, uintptr(unsafe.Pointer(&info)), optlen)
 	return err
 }
 
+// nolint
 func setNumOstreams(fd, num int) error {
 	return setInitOpts(fd, InitMsg{NumOstreams: uint16(num)})
+}
+
+func getMaxSegSize(fd int) (*int, error) {
+	val := AssocVal{}
+	optlen := unsafe.Sizeof(val)
+	_, _, err := getsockopt(fd, SCTP_MAXSEG, uintptr(unsafe.Pointer(&val)), uintptr(unsafe.Pointer(&optlen)))
+	if err != nil {
+		return nil, err
+	}
+	maxSeg := int(val.AssocVal)
+	return &maxSeg, nil
+}
+
+// see https://code.woboq.org/linux/linux/net/sctp/socket.c.html
+// sctp_setsockopt_maxseg: sctp_assoc_value is used to access and modify this parameter
+func setMaxSegSize(fd int, val int) error {
+	assocVal := AssocVal{
+		// AssocID:  0, // ignored for one-to-one style sockets
+		AssocVal: uint32(val),
+	}
+	optlen := unsafe.Sizeof(assocVal)
+	_, _, err := setsockopt(fd, SCTP_MAXSEG, uintptr(unsafe.Pointer(&assocVal)), optlen)
+	return err
 }
 
 type SCTPAddr struct {
@@ -328,6 +377,10 @@ func (a *SCTPAddr) ToRawSockAddrBuf() []byte {
 }
 
 func (a *SCTPAddr) String() string {
+	if a == nil {
+		return "<nil>"
+	}
+
 	var b bytes.Buffer
 
 	for n, i := range a.IPAddrs {
@@ -392,10 +445,15 @@ func SCTPConnect(fd int, addr *SCTPAddr) (int, error) {
 	buf := addr.ToRawSockAddrBuf()
 	param := GetAddrsOld{
 		AddrNum: int32(len(buf)),
-		Addrs:   uintptr(uintptr(unsafe.Pointer(&buf[0]))),
+		Addrs:   uintptr(unsafe.Pointer(&buf[0])),
 	}
 	optlen := unsafe.Sizeof(param)
-	_, _, err := getsockopt(fd, SCTP_SOCKOPT_CONNECTX3, uintptr(unsafe.Pointer(&param)), uintptr(unsafe.Pointer(&optlen)))
+	_, _, err := getsockopt(
+		fd,
+		SCTP_SOCKOPT_CONNECTX3,
+		uintptr(unsafe.Pointer(&param)),
+		uintptr(unsafe.Pointer(&optlen)),
+	)
 	if err == nil {
 		return int(param.AssocID), nil
 	} else if err != syscall.ENOPROTOOPT {
@@ -424,28 +482,18 @@ func SCTPBind(fd int, addr *SCTPAddr, flags int) error {
 type SCTPConn struct {
 	_fd                 int32
 	notificationHandler NotificationHandler
-	laddr               net.Addr
-	raddr               net.Addr
 }
 
 func (c *SCTPConn) fd() int {
 	return int(atomic.LoadInt32(&c._fd))
 }
 
-func NewSCTPConn(fd int, handler NotificationHandler) (*SCTPConn, error) {
-	var laddr, raddr net.Addr
-	var err error
-
-	laddr, err = sctpGetAddrs(fd, 0, SCTP_GET_LOCAL_ADDRS)
-	raddr, err = sctpGetAddrs(fd, 0, SCTP_GET_PEER_ADDRS)
-
+func NewSCTPConn(fd int, handler NotificationHandler) *SCTPConn {
 	conn := &SCTPConn{
 		_fd:                 int32(fd),
 		notificationHandler: handler,
-		laddr: laddr,
-		raddr: raddr,
 	}
-	return conn, err
+	return conn
 }
 
 func (c *SCTPConn) Write(b []byte) (int, error) {
@@ -514,14 +562,19 @@ func (c *SCTPConn) SubscribeEvents(flags int) error {
 		SenderDry:       se,
 	}
 	optlen := unsafe.Sizeof(param)
-	_, _, err := setsockopt(c.fd(), SCTP_EVENTS, uintptr(unsafe.Pointer(&param)), uintptr(optlen))
+	_, _, err := setsockopt(c.fd(), SCTP_EVENTS, uintptr(unsafe.Pointer(&param)), optlen)
 	return err
 }
 
 func (c *SCTPConn) SubscribedEvents() (int, error) {
 	param := EventSubscribe{}
 	optlen := unsafe.Sizeof(param)
-	_, _, err := getsockopt(c.fd(), SCTP_EVENTS, uintptr(unsafe.Pointer(&param)), uintptr(unsafe.Pointer(&optlen)))
+	_, _, err := getsockopt(
+		c.fd(),
+		SCTP_EVENTS,
+		uintptr(unsafe.Pointer(&param)),
+		uintptr(unsafe.Pointer(&optlen)),
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -561,15 +614,46 @@ func (c *SCTPConn) SubscribedEvents() (int, error) {
 
 func (c *SCTPConn) SetDefaultSentParam(info *SndRcvInfo) error {
 	optlen := unsafe.Sizeof(*info)
-	_, _, err := setsockopt(c.fd(), SCTP_DEFAULT_SENT_PARAM, uintptr(unsafe.Pointer(info)), uintptr(optlen))
+	_, _, err := setsockopt(c.fd(), SCTP_DEFAULT_SENT_PARAM, uintptr(unsafe.Pointer(info)), optlen)
 	return err
 }
 
 func (c *SCTPConn) GetDefaultSentParam() (*SndRcvInfo, error) {
 	info := &SndRcvInfo{}
 	optlen := unsafe.Sizeof(*info)
-	_, _, err := getsockopt(c.fd(), SCTP_DEFAULT_SENT_PARAM, uintptr(unsafe.Pointer(info)), uintptr(unsafe.Pointer(&optlen)))
+	_, _, err := getsockopt(
+		c.fd(),
+		SCTP_DEFAULT_SENT_PARAM,
+		uintptr(unsafe.Pointer(info)),
+		uintptr(unsafe.Pointer(&optlen)),
+	)
 	return info, err
+}
+
+func (c *SCTPConn) SetNoDelay(optval int) error {
+	optlen := unsafe.Sizeof(optval)
+	_, _, err := setsockopt(c.fd(), SCTP_NODELAY, uintptr(unsafe.Pointer(&optval)), optlen)
+	return err
+}
+
+func (c *SCTPConn) GetNoDelay() (int, error) {
+	optval := 0
+	optlen := unsafe.Sizeof(optval)
+	_, _, err := getsockopt(
+		c.fd(),
+		SCTP_NODELAY,
+		uintptr(unsafe.Pointer(&optval)),
+		uintptr(unsafe.Pointer(&optlen)),
+	)
+	return optval, err
+}
+
+func (c *SCTPConn) Getsockopt(optname, optval, optlen uintptr) (uintptr, uintptr, error) {
+	return getsockopt(c.fd(), optname, optval, optlen)
+}
+
+func (c *SCTPConn) Setsockopt(optname, optval, optlen uintptr) (uintptr, uintptr, error) {
+	return setsockopt(c.fd(), optname, optval, optlen)
 }
 
 func resolveFromRawAddr(ptr unsafe.Pointer, n int) (*SCTPAddr, error) {
@@ -579,8 +663,8 @@ func resolveFromRawAddr(ptr unsafe.Pointer, n int) (*SCTPAddr, error) {
 
 	switch family := (*(*syscall.RawSockaddrAny)(ptr)).Addr.Family; family {
 	case syscall.AF_INET:
-		addr.Port = int(ntohs(uint16((*(*syscall.RawSockaddrInet4)(ptr)).Port)))
-		tmp := syscall.RawSockaddrInet4{}
+		var tmp syscall.RawSockaddrInet4
+		addr.Port = int(ntohs((*(*syscall.RawSockaddrInet4)(ptr)).Port))
 		size := unsafe.Sizeof(tmp)
 		for i := 0; i < n; i++ {
 			a := *(*syscall.RawSockaddrInet4)(unsafe.Pointer(
@@ -588,8 +672,8 @@ func resolveFromRawAddr(ptr unsafe.Pointer, n int) (*SCTPAddr, error) {
 			addr.IPAddrs[i] = net.IPAddr{IP: a.Addr[:]}
 		}
 	case syscall.AF_INET6:
-		addr.Port = int(ntohs(uint16((*(*syscall.RawSockaddrInet4)(ptr)).Port)))
-		tmp := syscall.RawSockaddrInet6{}
+		var tmp syscall.RawSockaddrInet6
+		addr.Port = int(ntohs((*(*syscall.RawSockaddrInet4)(ptr)).Port))
 		size := unsafe.Sizeof(tmp)
 		for i := 0; i < n; i++ {
 			a := *(*syscall.RawSockaddrInet6)(unsafe.Pointer(
@@ -608,7 +692,6 @@ func resolveFromRawAddr(ptr unsafe.Pointer, n int) (*SCTPAddr, error) {
 }
 
 func sctpGetAddrs(fd, id, optname int) (*SCTPAddr, error) {
-
 	type getaddrs struct {
 		assocId int32
 		addrNum uint32
@@ -618,7 +701,12 @@ func sctpGetAddrs(fd, id, optname int) (*SCTPAddr, error) {
 		assocId: int32(id),
 	}
 	optlen := unsafe.Sizeof(param)
-	_, _, err := getsockopt(fd, uintptr(optname), uintptr(unsafe.Pointer(&param)), uintptr(unsafe.Pointer(&optlen)))
+	_, _, err := getsockopt(
+		fd,
+		uintptr(optname),
+		uintptr(unsafe.Pointer(&param)),
+		uintptr(unsafe.Pointer(&optlen)),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -626,7 +714,6 @@ func sctpGetAddrs(fd, id, optname int) (*SCTPAddr, error) {
 }
 
 func (c *SCTPConn) SCTPGetPrimaryPeerAddr() (*SCTPAddr, error) {
-
 	type sctpGetSetPrim struct {
 		assocId int32
 		addrs   [128]byte
@@ -635,7 +722,12 @@ func (c *SCTPConn) SCTPGetPrimaryPeerAddr() (*SCTPAddr, error) {
 		assocId: int32(0),
 	}
 	optlen := unsafe.Sizeof(param)
-	_, _, err := getsockopt(c.fd(), SCTP_PRIMARY_ADDR, uintptr(unsafe.Pointer(&param)), uintptr(unsafe.Pointer(&optlen)))
+	_, _, err := getsockopt(
+		c.fd(),
+		SCTP_PRIMARY_ADDR,
+		uintptr(unsafe.Pointer(&param)),
+		uintptr(unsafe.Pointer(&optlen)),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -651,11 +743,19 @@ func (c *SCTPConn) SCTPRemoteAddr(id int) (*SCTPAddr, error) {
 }
 
 func (c *SCTPConn) LocalAddr() net.Addr {
-	return c.laddr
+	addr, err := sctpGetAddrs(c.fd(), 0, SCTP_GET_LOCAL_ADDRS)
+	if err != nil {
+		return nil
+	}
+	return addr
 }
 
 func (c *SCTPConn) RemoteAddr() net.Addr {
-	return c.raddr
+	addr, err := sctpGetAddrs(c.fd(), 0, SCTP_GET_PEER_ADDRS)
+	if err != nil {
+		return nil
+	}
+	return addr
 }
 
 func (c *SCTPConn) PeelOff(id int) (*SCTPConn, error) {
@@ -667,7 +767,12 @@ func (c *SCTPConn) PeelOff(id int) (*SCTPConn, error) {
 		assocId: int32(id),
 	}
 	optlen := unsafe.Sizeof(param)
-	_, _, err := getsockopt(c.fd(), SCTP_SOCKOPT_PEELOFF, uintptr(unsafe.Pointer(&param)), uintptr(unsafe.Pointer(&optlen)))
+	_, _, err := getsockopt(
+		c.fd(),
+		SCTP_SOCKOPT_PEELOFF,
+		uintptr(unsafe.Pointer(&param)),
+		uintptr(unsafe.Pointer(&optlen)),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -687,9 +792,11 @@ func (c *SCTPConn) SetWriteDeadline(t time.Time) error {
 }
 
 type SCTPListener struct {
-	fd   int
-	epfd int // fd for epoll
-	m    sync.Mutex
+	fd        int
+	epfd      int        // fd for epoll
+	m         sync.Mutex // nolint
+	isStopped atomic.Bool
+	cancel    chan struct{}
 }
 
 func (ln *SCTPListener) Addr() net.Addr {
@@ -700,12 +807,25 @@ func (ln *SCTPListener) Addr() net.Addr {
 	return laddr
 }
 
+func (ln *SCTPListener) MaxSeg() (int, error) {
+	val, err := getMaxSegSize(ln.fd)
+	if err != nil {
+		return -1, errors.Wrap(err, "getMaxSegSize error")
+	}
+	return *val, nil
+}
+
 type SCTPSndRcvInfoWrappedConn struct {
 	conn *SCTPConn
 }
 
 func NewSCTPSndRcvInfoWrappedConn(conn *SCTPConn) *SCTPSndRcvInfoWrappedConn {
-	conn.SubscribeEvents(SCTP_EVENT_DATA_IO)
+	err := conn.SubscribeEvents(SCTP_EVENT_DATA_IO)
+	if err != nil {
+		fmt.Printf("NewSCTPSndRcvInfoWrappedConn: Failed to subscribe events %v", err)
+		return nil
+	}
+
 	return &SCTPSndRcvInfoWrappedConn{conn}
 }
 
@@ -784,12 +904,24 @@ type SocketConfig struct {
 
 	// AssocInfo (RFC 6458)
 	AssocInfo *AssocInfo
+
+	// MaxSeg: maximum size to put in any outgoing SCTP DATA chunk
+	MaxSeg int
 }
 
 func (cfg *SocketConfig) Listen(net string, laddr *SCTPAddr) (*SCTPListener, error) {
-	return listenSCTPExtConfig(net, laddr, cfg.InitMsg, cfg.RtoInfo, cfg.AssocInfo, cfg.Control)
+	return listenSCTPExtConfig(net, laddr, cfg.InitMsg, cfg.RtoInfo, cfg.AssocInfo, cfg.MaxSeg, cfg.Control)
 }
 
 func (cfg *SocketConfig) Dial(net string, laddr, raddr *SCTPAddr) (*SCTPConn, error) {
-	return dialSCTPExtConfig(net, laddr, raddr, cfg.InitMsg, cfg.RtoInfo, cfg.AssocInfo, cfg.Control)
+	return dialSCTPExtConfig(
+		net,
+		laddr,
+		raddr,
+		cfg.InitMsg,
+		cfg.RtoInfo,
+		cfg.AssocInfo,
+		cfg.MaxSeg,
+		cfg.Control,
+	)
 }

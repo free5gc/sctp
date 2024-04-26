@@ -44,8 +44,14 @@ func TestStreams(t *testing.T) {
 	}
 
 	addr, _ := ResolveSCTPAddr("sctp", "127.0.0.1:0")
-	ln, err := ListenSCTPExt("sctp", addr, InitMsg{NumOstreams: STREAM_TEST_STREAMS, MaxInstreams: STREAM_TEST_STREAMS},
-		&RtoInfo{SrtoInitial: 3000, SrtoMax: 60000, StroMin: 1000}, nil)
+	ln, err := ListenSCTPExt(
+		"sctp",
+		addr,
+		InitMsg{NumOstreams: STREAM_TEST_STREAMS, MaxInstreams: STREAM_TEST_STREAMS},
+		&RtoInfo{SrtoInitial: 3000, SrtoMax: 60000, StroMin: 1000},
+		nil,
+		0,
+	)
 	if err != nil {
 		t.Fatalf("failed to listen: %v", err)
 	}
@@ -54,7 +60,7 @@ func TestStreams(t *testing.T) {
 
 	go func() {
 		for {
-			c, err := ln.Accept()
+			c, err := ln.Accept(1000)
 			sconn := c.(*SCTPConn)
 			if err != nil {
 				t.Errorf("failed to accept: %v", err)
@@ -73,7 +79,11 @@ func TestStreams(t *testing.T) {
 							if n == 0 {
 								break
 							}
-							t.Logf("EOF on server connection. Total bytes received: %d, bytes received: %d", totalrcvd, n)
+							t.Logf(
+								"EOF on server connection. Total bytes received: %d, bytes received: %d",
+								totalrcvd,
+								n,
+							)
 						} else {
 							t.Errorf("Server connection read err: %v. Total bytes received: %d, bytes received: %d", err, totalrcvd, n)
 							return
@@ -96,8 +106,14 @@ func TestStreams(t *testing.T) {
 		go func(test int) {
 			defer func() { wait <- struct{}{} }()
 			conn, err := DialSCTPExt(
-				"sctp", nil, addr, InitMsg{NumOstreams: STREAM_TEST_STREAMS, MaxInstreams: STREAM_TEST_STREAMS},
-				&RtoInfo{SrtoInitial: 3000, SrtoMax: 60000, StroMin: 1000}, nil)
+				"sctp",
+				nil,
+				addr,
+				InitMsg{NumOstreams: STREAM_TEST_STREAMS, MaxInstreams: STREAM_TEST_STREAMS},
+				&RtoInfo{SrtoInitial: 3000, SrtoMax: 60000, StroMin: 1000},
+				nil,
+				0,
+			)
 			if err != nil {
 				t.Errorf("failed to dial address %s, test #%d: %v", addr.String(), test, err)
 				return
@@ -115,7 +131,13 @@ func TestStreams(t *testing.T) {
 				text := fmt.Sprintf("Test %s ***\n\t\t%d %d ***", randomStr(randomLen), test, ppid)
 				n, err := conn.SCTPWrite([]byte(text), info)
 				if err != nil {
-					t.Errorf("failed to write %s, len: %d, err: %v, bytes written: %d", text, len(text), err, n)
+					t.Errorf(
+						"failed to write %s, len: %d, err: %v, bytes written: %d",
+						text,
+						len(text),
+						err,
+						n,
+					)
 					return
 				}
 				rn := 0
