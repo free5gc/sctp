@@ -11,7 +11,7 @@ import (
 	"github.com/free5gc/sctp"
 )
 
-func serveClient(conn net.Conn, bufsize int) {
+func serveClient(conn net.Conn, bufsize int) error {
 	for {
 		buf := make([]byte, bufsize+128) // add overhead of SCTPSndRcvInfoWrappedConn
 		n, err := conn.Read(buf)
@@ -93,7 +93,10 @@ func main() {
 			}
 			log.Printf("SndBufSize: %d, RcvBufSize: %d", *sndbuf, *rcvbuf)
 
-			go serveClient(wconn, *bufsize)
+			go func() {
+				err := serveClient(wconn, *bufsize)
+				log.Fatalf("serveClient failed: %v", err)
+			}()
 		}
 	} else {
 		var laddr *sctp.SCTPAddr
