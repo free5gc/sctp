@@ -169,6 +169,13 @@ type AssocInfo struct {
 	CookieLife uint32
 }
 
+// SackTimer Parameters defined in RFC 6458 8.1.19 - SCTP_DELAYED_SACK Delayed Sack Timer sack_timeout
+type SackTimer struct {
+	AssocID       SCTPAssocID
+	SackDelay     uint32
+	SackFrequency uint32
+}
+
 type AssocVal struct {
 	AssocID  SCTPAssocID
 	AssocVal uint32
@@ -646,6 +653,24 @@ func (c *SCTPConn) GetNoDelay() (int, error) {
 		uintptr(unsafe.Pointer(&optlen)),
 	)
 	return optval, err
+}
+
+func (c *SCTPConn) SetSackTimer(timer *SackTimer) error { // SackTimer
+	optlen := unsafe.Sizeof(*timer)
+	_, _, err := setsockopt(c.fd(), SCTP_DELAYED_SACK, uintptr(unsafe.Pointer(timer)), optlen)
+	return err
+}
+
+func (c *SCTPConn) GetSackTimer() (*SackTimer, error) { // SackTimer
+	timer := &SackTimer{}
+	optlen := unsafe.Sizeof(*timer)
+	_, _, err := getsockopt(
+		c.fd(),
+		SCTP_DELAYED_SACK,
+		uintptr(unsafe.Pointer(timer)),
+		uintptr(unsafe.Pointer(&optlen)),
+	)
+	return timer, err
 }
 
 func (c *SCTPConn) Getsockopt(optname, optval, optlen uintptr) (uintptr, uintptr, error) {
