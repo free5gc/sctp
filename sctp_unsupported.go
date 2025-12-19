@@ -1,4 +1,6 @@
+//go:build !linux || (linux && 386)
 // +build !linux linux,386
+
 // Copyright 2019 Wataru Ishida. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -37,8 +39,8 @@ func (c *SCTPConn) SCTPWrite(b []byte, info *SndRcvInfo) (int, error) {
 	return 0, ErrUnsupported
 }
 
-func (c *SCTPConn) SCTPRead(b []byte) (int, *SndRcvInfo, error) {
-	return 0, nil, ErrUnsupported
+func (c *SCTPConn) SCTPRead(b []byte) (int, *SndRcvInfo, Notification, error) {
+	return 0, nil, nil, ErrUnsupported
 }
 
 func (c *SCTPConn) Close() error {
@@ -69,11 +71,11 @@ func ListenSCTPExt(net string, laddr *SCTPAddr, options InitMsg) (*SCTPListener,
 	return nil, ErrUnsupported
 }
 
-func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, control func(network, address string, c syscall.RawConn) error) (*SCTPListener, error) {
+func listenSCTPExtConfig(network string, laddr *SCTPAddr, options InitMsg, rtoInfo *RtoInfo, assocInfo *AssocInfo, maxSeg int, control func(network, address string, c syscall.RawConn) error) (*SCTPListener, error) {
 	return nil, ErrUnsupported
 }
 
-func (ln *SCTPListener) Accept() (net.Conn, error) {
+func (ln *SCTPListener) Accept(timeout int) (net.Conn, error) {
 	return nil, ErrUnsupported
 }
 
@@ -93,6 +95,6 @@ func DialSCTPExt(network string, laddr, raddr *SCTPAddr, options InitMsg) (*SCTP
 	return nil, ErrUnsupported
 }
 
-func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, control func(network, address string, c syscall.RawConn) error) (*SCTPConn, error) {
+func dialSCTPExtConfig(network string, laddr, raddr *SCTPAddr, options InitMsg, rtoInfo *RtoInfo, assocInfo *AssocInfo, maxSeg int, control func(network, address string, c syscall.RawConn) error) (*SCTPConn, error) {
 	return nil, ErrUnsupported
 }
