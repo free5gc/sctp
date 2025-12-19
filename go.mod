@@ -1,5 +1,5 @@
 module github.com/free5gc/sctp
 
-go 1.24
+go 1.25.5
 
 require github.com/pkg/errors v0.9.1
