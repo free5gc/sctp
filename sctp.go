@@ -224,7 +224,8 @@ var (
 
 func init() {
 	i := uint16(1)
-	if *(*byte)(unsafe.Pointer(&i)) == 0 {
+	p := unsafe.Pointer(&i) // #nosec G103
+	if *(*byte)(p) == 0 {
 		nativeEndian = binary.BigEndian
 	} else {
 		nativeEndian = binary.LittleEndian
@@ -255,8 +256,13 @@ var ntohs = htons
 // see https://tools.ietf.org/html/rfc4960#page-25
 func setInitOpts(fd int, options InitMsg) error {
 	optlen := unsafe.Sizeof(options)
-	_, _, err := setsockopt(fd, SCTP_INITMSG, uintptr(unsafe.Pointer(&options)), optlen)
-	return err
+	_, _, err := setsockopt(fd, SCTP_INITMSG, uintptr(unsafe.Pointer(&options)), optlen) // #nosec G103
+	if err != nil {
+		return errors.Wrapf(err, "setInitOpts: failed to set SCTP init options "+
+			"(ostreams=%d, instreams=%d, attempts=%d, timeout=%d)",
+			options.NumOstreams, options.MaxInstreams, options.MaxAttempts, options.MaxInitTimeout)
+	}
+	return nil
 }
 
 func getRtoInfo(fd int) (*RtoInfo, error) {
@@ -265,20 +271,24 @@ func getRtoInfo(fd int) (*RtoInfo, error) {
 	_, _, err := getsockopt(
 		fd,
 		SCTP_RTOINFO,
-		uintptr(unsafe.Pointer(&rtoInfo)),
-		uintptr(unsafe.Pointer(&rtolen)),
+		uintptr(unsafe.Pointer(&rtoInfo)), // #nosec G103
+		uintptr(unsafe.Pointer(&rtolen)),  // #nosec G103
 	)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "getRtoInfo: failed to get SCTP RTO info")
 	}
 
-	return &rtoInfo, err
+	return &rtoInfo, nil
 }
 
 func setRtoInfo(fd int, rtoInfo RtoInfo) error {
 	rtolen := unsafe.Sizeof(rtoInfo)
-	_, _, err := setsockopt(fd, SCTP_RTOINFO, uintptr(unsafe.Pointer(&rtoInfo)), rtolen)
-	return err
+	_, _, err := setsockopt(fd, SCTP_RTOINFO, uintptr(unsafe.Pointer(&rtoInfo)), rtolen) // #nosec G103
+	if err != nil {
+		return errors.Wrapf(err, "setRtoInfo: failed to set SCTP RTO info (initial=%dms, max=%dms, min=%dms)",
+			rtoInfo.SrtoInitial, rtoInfo.SrtoMax, rtoInfo.StroMin)
+	}
+	return nil
 }
 
 func getAssocInfo(fd int) (*AssocInfo, error) {
@@ -287,19 +297,24 @@ func getAssocInfo(fd int) (*AssocInfo, error) {
 	_, _, err := getsockopt(
 		fd,
 		SCTP_ASSOCINFO,
-		uintptr(unsafe.Pointer(&info)),
-		uintptr(unsafe.Pointer(&optlen)),
+		uintptr(unsafe.Pointer(&info)),   // #nosec G103
+		uintptr(unsafe.Pointer(&optlen)), // #nosec G103
 	)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "getAssocInfo: failed to get SCTP association info")
 	}
 	return &info, nil
 }
 
 func setAssocInfo(fd int, info AssocInfo) error {
 	optlen := unsafe.Sizeof(info)
-	_, _, err := setsockopt(fd, SCTP_ASSOCINFO, uintptr(unsafe.Pointer(&info)), optlen)
-	return err
+	_, _, err := setsockopt(fd, SCTP_ASSOCINFO, uintptr(unsafe.Pointer(&info)), optlen) // #nosec G103
+	if err != nil {
+		return errors.Wrapf(err, "setAssocInfo: failed to set SCTP association info "+
+			"(maxRxt=%d, cookieLife=%dms)",
+			info.AsocMaxRxt, info.CookieLife)
+	}
+	return nil
 }
 
 // nolint
@@ -310,9 +325,9 @@ func setNumOstreams(fd, num int) error {
 func getMaxSegSize(fd int) (*int, error) {
 	val := AssocVal{}
 	optlen := unsafe.Sizeof(val)
-	_, _, err := getsockopt(fd, SCTP_MAXSEG, uintptr(unsafe.Pointer(&val)), uintptr(unsafe.Pointer(&optlen)))
+	_, _, err := getsockopt(fd, SCTP_MAXSEG, uintptr(unsafe.Pointer(&val)), uintptr(unsafe.Pointer(&optlen))) // #nosec G103
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "getMaxSegSize: failed to get SCTP max segment size")
 	}
 	maxSeg := int(val.AssocVal)
 	return &maxSeg, nil
@@ -326,8 +341,11 @@ func setMaxSegSize(fd int, val int) error {
 		AssocVal: uint32(val),
 	}
 	optlen := unsafe.Sizeof(assocVal)
-	_, _, err := setsockopt(fd, SCTP_MAXSEG, uintptr(unsafe.Pointer(&assocVal)), optlen)
-	return err
+	_, _, err := setsockopt(fd, SCTP_MAXSEG, uintptr(unsafe.Pointer(&assocVal)), optlen) // #nosec G103
+	if err != nil {
+		return errors.Wrapf(err, "setMaxSegSize: failed to set SCTP max segment size to %d bytes", val)
+	}
+	return nil
 }
 
 type SCTPAddr struct {
@@ -442,45 +460,70 @@ func ResolveSCTPAddr(network, addrs string) (*SCTPAddr, error) {
 }
 
 func SCTPConnect(fd int, addr *SCTPAddr) (int, error) {
+	if addr == nil {
+		return 0, errors.Errorf("SCTPConnect: addr is nil")
+	}
 	buf := addr.ToRawSockAddrBuf()
 	param := GetAddrsOld{
 		AddrNum: int32(len(buf)),
-		Addrs:   uintptr(unsafe.Pointer(&buf[0])),
+		Addrs:   uintptr(unsafe.Pointer(&buf[0])), // #nosec G103
 	}
 	optlen := unsafe.Sizeof(param)
 	_, _, err := getsockopt(
 		fd,
 		SCTP_SOCKOPT_CONNECTX3,
-		uintptr(unsafe.Pointer(&param)),
-		uintptr(unsafe.Pointer(&optlen)),
+		uintptr(unsafe.Pointer(&param)),  // #nosec G103
+		uintptr(unsafe.Pointer(&optlen)), // #nosec G103
 	)
 	if err == nil {
 		return int(param.AssocID), nil
 	} else if err != syscall.ENOPROTOOPT {
-		return 0, err
+		return 0, errors.Wrapf(err, "SCTPConnect: SCTP connectx3 to %s failed", addr.String())
 	}
-	r0, _, err := setsockopt(fd, SCTP_SOCKOPT_CONNECTX, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
-	return int(r0), err
+	r0, _, err := setsockopt(fd, SCTP_SOCKOPT_CONNECTX, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf))) // #nosec G103
+	if err != nil {
+		return int(r0), errors.Wrapf(err, "SCTPConnect: SCTP connectx to %s failed", addr.String())
+	}
+	return int(r0), nil
 }
 
 func SCTPBind(fd int, addr *SCTPAddr, flags int) error {
 	var option uintptr
+	opName := "" // for logging
 	switch flags {
 	case SCTP_BINDX_ADD_ADDR:
+		opName = "add"
 		option = SCTP_SOCKOPT_BINDX_ADD
 	case SCTP_BINDX_REM_ADDR:
+		opName = "remove"
 		option = SCTP_SOCKOPT_BINDX_REM
 	default:
-		return syscall.EINVAL
+		return errors.Wrapf(syscall.EINVAL, "SCTPBind: invalid SCTP bind flags %d "+
+			"(expected SCTP_BINDX_ADD_ADDR or SCTP_BINDX_REM_ADDR)",
+			flags)
 	}
 
+	if addr == nil {
+		return errors.Errorf("SCTPBind: addr is nil")
+	}
 	buf := addr.ToRawSockAddrBuf()
-	_, _, err := setsockopt(fd, option, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
-	return err
+	_, _, err := setsockopt(fd, option, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf))) // #nosec G103
+	if err != nil {
+		return errors.Wrapf(err, "SCTPBind: failed to %s SCTP address binding for %s", opName, addr.String())
+	}
+	return nil
 }
 
 type SCTPConn struct {
 	_fd                 int32
+	// ioMu guards fd lifetime against concurrent I/O. SCTPRead and SCTPWrite hold
+	// RLock for the duration of their syscall, preventing the fd from being closed
+	// while they are in-flight. Close holds the exclusive Lock only after Shutdown
+	// has unblocked all pending syscalls, ensuring syscall.Close(fd) is not called
+	// until every goroutine has exited Recvmsg/Sendmsg. This eliminates the fd
+	// reuse race (TOCTOU) where the OS could reassign the fd to a new connection
+	// before an old goroutine finished reading from it.
+	ioMu                sync.RWMutex
 	notificationHandler NotificationHandler
 }
 
@@ -562,8 +605,11 @@ func (c *SCTPConn) SubscribeEvents(flags int) error {
 		SenderDry:       se,
 	}
 	optlen := unsafe.Sizeof(param)
-	_, _, err := setsockopt(c.fd(), SCTP_EVENTS, uintptr(unsafe.Pointer(&param)), optlen)
-	return err
+	_, _, err := setsockopt(c.fd(), SCTP_EVENTS, uintptr(unsafe.Pointer(&param)), optlen) // #nosec G103
+	if err != nil {
+		return errors.Wrapf(err, "SubscribeEvents: failed to subscribe to SCTP events (flags=0x%x)", flags)
+	}
+	return nil
 }
 
 func (c *SCTPConn) SubscribedEvents() (int, error) {
@@ -572,11 +618,11 @@ func (c *SCTPConn) SubscribedEvents() (int, error) {
 	_, _, err := getsockopt(
 		c.fd(),
 		SCTP_EVENTS,
-		uintptr(unsafe.Pointer(&param)),
-		uintptr(unsafe.Pointer(&optlen)),
+		uintptr(unsafe.Pointer(&param)),  // #nosec G103
+		uintptr(unsafe.Pointer(&optlen)), // #nosec G103
 	)
 	if err != nil {
-		return 0, err
+		return 0, errors.Wrap(err, "SubscribedEvents: failed to get subscribed SCTP events")
 	}
 	var flags int
 	if param.DataIO > 0 {
@@ -614,8 +660,11 @@ func (c *SCTPConn) SubscribedEvents() (int, error) {
 
 func (c *SCTPConn) SetDefaultSentParam(info *SndRcvInfo) error {
 	optlen := unsafe.Sizeof(*info)
-	_, _, err := setsockopt(c.fd(), SCTP_DEFAULT_SENT_PARAM, uintptr(unsafe.Pointer(info)), optlen)
-	return err
+	_, _, err := setsockopt(c.fd(), SCTP_DEFAULT_SENT_PARAM, uintptr(unsafe.Pointer(info)), optlen) // #nosec G103
+	if err != nil {
+		return errors.Wrap(err, "SetDefaultSentParam: failed to set SCTP default sent parameters")
+	}
+	return nil
 }
 
 func (c *SCTPConn) GetDefaultSentParam() (*SndRcvInfo, error) {
@@ -624,16 +673,22 @@ func (c *SCTPConn) GetDefaultSentParam() (*SndRcvInfo, error) {
 	_, _, err := getsockopt(
 		c.fd(),
 		SCTP_DEFAULT_SENT_PARAM,
-		uintptr(unsafe.Pointer(info)),
-		uintptr(unsafe.Pointer(&optlen)),
+		uintptr(unsafe.Pointer(info)),    // #nosec G103
+		uintptr(unsafe.Pointer(&optlen)), // #nosec G103
 	)
-	return info, err
+	if err != nil {
+		return nil, errors.Wrap(err, "GetDefaultSentParam: failed to get SCTP default sent parameters")
+	}
+	return info, nil
 }
 
 func (c *SCTPConn) SetNoDelay(optval int) error {
 	optlen := unsafe.Sizeof(optval)
-	_, _, err := setsockopt(c.fd(), SCTP_NODELAY, uintptr(unsafe.Pointer(&optval)), optlen)
-	return err
+	_, _, err := setsockopt(c.fd(), SCTP_NODELAY, uintptr(unsafe.Pointer(&optval)), optlen) // #nosec G103
+	if err != nil {
+		return errors.Wrapf(err, "SetNoDelay: failed to set SCTP_NODELAY to %d", optval)
+	}
+	return nil
 }
 
 func (c *SCTPConn) GetNoDelay() (int, error) {
@@ -642,10 +697,13 @@ func (c *SCTPConn) GetNoDelay() (int, error) {
 	_, _, err := getsockopt(
 		c.fd(),
 		SCTP_NODELAY,
-		uintptr(unsafe.Pointer(&optval)),
-		uintptr(unsafe.Pointer(&optlen)),
+		uintptr(unsafe.Pointer(&optval)), // #nosec G103
+		uintptr(unsafe.Pointer(&optlen)), // #nosec G103
 	)
-	return optval, err
+	if err != nil {
+		return 0, errors.Wrap(err, "GetNoDelay: failed to get SCTP_NODELAY")
+	}
+	return optval, nil
 }
 
 func (c *SCTPConn) Getsockopt(optname, optval, optlen uintptr) (uintptr, uintptr, error) {
@@ -668,7 +726,7 @@ func resolveFromRawAddr(ptr unsafe.Pointer, n int) (*SCTPAddr, error) {
 		size := unsafe.Sizeof(tmp)
 		for i := 0; i < n; i++ {
 			a := *(*syscall.RawSockaddrInet4)(unsafe.Pointer(
-				uintptr(ptr) + size*uintptr(i)))
+				uintptr(ptr) + size*uintptr(i))) // #nosec G103
 			addr.IPAddrs[i] = net.IPAddr{IP: a.Addr[:]}
 		}
 	case syscall.AF_INET6:
@@ -677,7 +735,7 @@ func resolveFromRawAddr(ptr unsafe.Pointer, n int) (*SCTPAddr, error) {
 		size := unsafe.Sizeof(tmp)
 		for i := 0; i < n; i++ {
 			a := *(*syscall.RawSockaddrInet6)(unsafe.Pointer(
-				uintptr(ptr) + size*uintptr(i)))
+				uintptr(ptr) + size*uintptr(i))) // #nosec G103
 			var zone string
 			ifi, err := net.InterfaceByIndex(int(a.Scope_id))
 			if err == nil {
@@ -704,13 +762,13 @@ func sctpGetAddrs(fd, id, optname int) (*SCTPAddr, error) {
 	_, _, err := getsockopt(
 		fd,
 		uintptr(optname),
-		uintptr(unsafe.Pointer(&param)),
-		uintptr(unsafe.Pointer(&optlen)),
+		uintptr(unsafe.Pointer(&param)),  // #nosec G103
+		uintptr(unsafe.Pointer(&optlen)), // #nosec G103
 	)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, "sctpGetAddrs: failed to get SCTP addresses (optname=%d)", optname)
 	}
-	return resolveFromRawAddr(unsafe.Pointer(&param.addrs), int(param.addrNum))
+	return resolveFromRawAddr(unsafe.Pointer(&param.addrs), int(param.addrNum)) // #nosec G103
 }
 
 func (c *SCTPConn) SCTPGetPrimaryPeerAddr() (*SCTPAddr, error) {
@@ -725,13 +783,13 @@ func (c *SCTPConn) SCTPGetPrimaryPeerAddr() (*SCTPAddr, error) {
 	_, _, err := getsockopt(
 		c.fd(),
 		SCTP_PRIMARY_ADDR,
-		uintptr(unsafe.Pointer(&param)),
-		uintptr(unsafe.Pointer(&optlen)),
+		uintptr(unsafe.Pointer(&param)),  // #nosec G103
+		uintptr(unsafe.Pointer(&optlen)), // #nosec G103
 	)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "SCTPGetPrimaryPeerAddr: failed to get SCTP primary peer address")
 	}
-	return resolveFromRawAddr(unsafe.Pointer(&param.addrs), 1)
+	return resolveFromRawAddr(unsafe.Pointer(&param.addrs), 1) // #nosec G103
 }
 
 func (c *SCTPConn) SCTPLocalAddr(id int) (*SCTPAddr, error) {
@@ -770,11 +828,11 @@ func (c *SCTPConn) PeelOff(id int) (*SCTPConn, error) {
 	_, _, err := getsockopt(
 		c.fd(),
 		SCTP_SOCKOPT_PEELOFF,
-		uintptr(unsafe.Pointer(&param)),
-		uintptr(unsafe.Pointer(&optlen)),
+		uintptr(unsafe.Pointer(&param)),  // #nosec G103
+		uintptr(unsafe.Pointer(&optlen)), // #nosec G103
 	)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrapf(err, "PeelOff: failed to peel off SCTP association (id=%d)", id)
 	}
 	return &SCTPConn{_fd: int32(param.sd)}, nil
 }
@@ -810,7 +868,7 @@ func (ln *SCTPListener) Addr() net.Addr {
 func (ln *SCTPListener) MaxSeg() (int, error) {
 	val, err := getMaxSegSize(ln.fd)
 	if err != nil {
-		return -1, errors.Wrap(err, "getMaxSegSize error")
+		return -1, errors.Wrap(err, "MaxSeg: failed to get SCTP max segment size")
 	}
 	return *val, nil
 }
@@ -833,7 +891,7 @@ func (c *SCTPSndRcvInfoWrappedConn) Write(b []byte) (int, error) {
 	if len(b) < int(sndRcvInfoSize) {
 		return 0, syscall.EINVAL
 	}
-	info := (*SndRcvInfo)(unsafe.Pointer(&b[0]))
+	info := (*SndRcvInfo)(unsafe.Pointer(&b[0])) // #nosec G103
 	n, err := c.conn.SCTPWrite(b[sndRcvInfoSize:], info)
 	return n + int(sndRcvInfoSize), err
 }

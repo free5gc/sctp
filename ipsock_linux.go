@@ -6,9 +6,10 @@ package sctp
 
 import (
 	"net"
-	"os"
 	"sync"
 	"syscall"
+
+	"github.com/pkg/errors"
 )
 
 // from https://github.com/golang/go
@@ -86,7 +87,7 @@ var ipStackCaps ipStackCapabilities
 // supportsIPv4 reports whether the platform supports IPv4 networking
 // functionality.
 func supportsIPv4() bool {
-	ipStackCaps.Once.Do(ipStackCaps.probe)
+	ipStackCaps.Do(ipStackCaps.probe)
 	return ipStackCaps.ipv4Enabled
 }
 
@@ -95,7 +96,7 @@ func supportsIPv4() bool {
 // functionality.
 // nolint
 func supportsIPv6() bool {
-	ipStackCaps.Once.Do(ipStackCaps.probe)
+	ipStackCaps.Do(ipStackCaps.probe)
 	return ipStackCaps.ipv6Enabled
 }
 
@@ -104,7 +105,7 @@ func supportsIPv6() bool {
 // IPv4 address inside an IPv6 address at transport layer
 // protocols. See RFC 4291, RFC 4038 and RFC 3493.
 func supportsIPv4map() bool {
-	ipStackCaps.Once.Do(ipStackCaps.probe)
+	ipStackCaps.Do(ipStackCaps.probe)
 	return ipStackCaps.ipv4MappedIPv6Enabled
 }
 
@@ -125,7 +126,9 @@ func (p *ipStackCapabilities) probe() {
 	switch err {
 	case syscall.EAFNOSUPPORT, syscall.EPROTONOSUPPORT:
 	case nil:
-		syscall.Close(s)
+		if err := syscall.Close(s); err != nil {
+			return
+		}
 		p.ipv4Enabled = true
 	}
 	var probes = []struct {
@@ -143,8 +146,15 @@ func (p *ipStackCapabilities) probe() {
 		if err != nil {
 			continue
 		}
-		defer syscall.Close(s)
-		syscall.SetsockoptInt(s, syscall.IPPROTO_IPV6, syscall.IPV6_V6ONLY, probes[i].value)
+		defer func() {
+			if err := syscall.Close(s); err != nil {
+				return
+			}
+		}()
+		err = syscall.SetsockoptInt(s, syscall.IPPROTO_IPV6, syscall.IPV6_V6ONLY, probes[i].value)
+		if err != nil {
+			continue
+		}
 		sa, err := sockaddr(&(probes[i].laddr), syscall.AF_INET6)
 		if err != nil {
 			continue
@@ -166,7 +176,7 @@ func (a *SCTPAddr) isWildcard() bool {
 	if a == nil {
 		return true
 	}
-	if 0 == len(a.IPAddrs) {
+	if len(a.IPAddrs) == 0 {
 		return true
 	}
 
@@ -218,8 +228,16 @@ func setDefaultSockopts(s int, family int, ipv6only bool) error {
 		// Allow both IP versions even if the OS default
 		// is otherwise. Note that some operating systems
 		// never admit this option.
-		syscall.SetsockoptInt(s, syscall.IPPROTO_IPV6, syscall.IPV6_V6ONLY, boolint(ipv6only))
+		err := syscall.SetsockoptInt(s, syscall.IPPROTO_IPV6, syscall.IPV6_V6ONLY, boolint(ipv6only))
+		if err != nil {
+			return errors.Wrapf(err,
+				"setDefaultSockopts: failed to set IPV6_V6ONLY=%v on SCTP socket", ipv6only)
+		}
 	}
 	// Allow broadcast.
-	return os.NewSyscallError("setsockopt", syscall.SetsockoptInt(s, syscall.SOL_SOCKET, syscall.SO_BROADCAST, 1))
+	err := syscall.SetsockoptInt(s, syscall.SOL_SOCKET, syscall.SO_BROADCAST, 1)
+	if err != nil {
+		return errors.Wrap(err, "setDefaultSockopts: failed to set SO_BROADCAST on SCTP socket")
+	}
+	return nil
 }

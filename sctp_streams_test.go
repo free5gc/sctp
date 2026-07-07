@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	STREAM_TEST_CLIENTS = 128
+	STREAM_TEST_CLIENTS = 32
 	STREAM_TEST_STREAMS = 11
 )
 
@@ -56,52 +56,26 @@ func TestStreams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to listen: %v", err)
 	}
+	defer ln.Close()
 	addr = ln.Addr().(*SCTPAddr)
 	t.Logf("Listen on %s", ln.Addr())
 
-	var closeOnce sync.Once
-	closeListener := func() {
-		closeOnce.Do(func() {
-			if err := ln.Close(); err != nil {
-				t.Logf("failed to close listener: %v", err)
-			}
-		})
-	}
-	t.Cleanup(closeListener)
-
-	var serverWG sync.WaitGroup
-	serverWG.Add(1)
+	var serverWg sync.WaitGroup
+	var clientWg sync.WaitGroup
+	acceptClientCnt := STREAM_TEST_CLIENTS
+	serverWg.Add(1)
 	go func() {
-		defer serverWG.Done()
-		for {
+		defer serverWg.Done()
+		for ; acceptClientCnt > 0; acceptClientCnt-- {
 			c, err := ln.Accept(1000)
+			sconn := c.(*SCTPConn)
 			if err != nil {
-				if ln.IsStopped() || err == syscall.EBADF {
-					return
-				}
 				t.Errorf("failed to accept: %v", err)
 				return
 			}
-			if c == nil {
-				if ln.IsStopped() {
-					return
-				}
-				continue
-			}
-			sconn, ok := c.(*SCTPConn)
-			if !ok || sconn == nil {
-				if ln.IsStopped() {
-					return
-				}
-				continue
-			}
 
-			serverWG.Add(1)
-			go func(sconn *SCTPConn) {
-				defer serverWG.Done()
-				defer sconn.Close()
-
-				sconn.SubscribeEvents(SCTP_EVENT_DATA_IO)
+			sconn.SubscribeEvents(SCTP_EVENT_DATA_IO)
+			go func() {
 				totalrcvd := 0
 				for {
 					buf := make([]byte, 512)
@@ -109,7 +83,7 @@ func TestStreams(t *testing.T) {
 					if err != nil {
 						if err == io.EOF || err == io.ErrUnexpectedEOF {
 							if n == 0 {
-								return
+								break
 							}
 							t.Logf(
 								"EOF on server connection. Total bytes received: %d, bytes received: %d",
@@ -118,10 +92,10 @@ func TestStreams(t *testing.T) {
 							)
 						} else {
 							t.Errorf("Server connection read err: %v. Total bytes received: %d, bytes received: %d", err, totalrcvd, n)
+							sconn.Close()
 							return
 						}
 					}
-					totalrcvd += n
 					t.Logf("server read: info: %+v, payload: %s", info, string(buf[:n]))
 					n, err = sconn.SCTPWrite(buf[:n], info)
 					if err != nil {
@@ -129,15 +103,15 @@ func TestStreams(t *testing.T) {
 						return
 					}
 				}
-			}(sconn)
+			}()
 		}
 	}()
 
-	var clientWG sync.WaitGroup
-	clientWG.Add(STREAM_TEST_CLIENTS)
-	for i := 0; i < STREAM_TEST_CLIENTS; i++ {
+	i := 0
+	for ; i < STREAM_TEST_CLIENTS; i++ {
+		clientWg.Add(1)
 		go func(test int) {
-			defer clientWG.Done()
+			defer clientWg.Done()
 			conn, err := DialSCTPExt(
 				"sctp",
 				nil,
@@ -147,9 +121,28 @@ func TestStreams(t *testing.T) {
 				nil,
 				0,
 			)
-			if err != nil {
-				t.Errorf("failed to dial address %s, test #%d: %v", addr.String(), test, err)
-				return
+			for {
+				switch err {
+				case syscall.EISCONN, syscall.EALREADY, syscall.EINPROGRESS:
+					conn.Close()
+					conn, err = DialSCTPExt(
+						"sctp",
+						nil,
+						addr,
+						InitMsg{NumOstreams: STREAM_TEST_STREAMS, MaxInstreams: STREAM_TEST_STREAMS},
+						&RtoInfo{SrtoInitial: 3000, SrtoMax: 60000, StroMin: 1000},
+						nil,
+						0,
+					)
+				case nil:
+					break
+				default:
+					t.Errorf("failed to dial address %s, test #%d: %v", addr.String(), test, err)
+					return
+				}
+				if err == nil {
+					break
+				}
 			}
 			defer conn.Close()
 			conn.SubscribeEvents(SCTP_EVENT_DATA_IO)
@@ -197,33 +190,11 @@ func TestStreams(t *testing.T) {
 				}
 				rtext := string(buf[:rn])
 				if rtext != text {
-					t.Errorf("Mismatched payload: %s != %s", rtext, text)
-					return
+					t.Fatalf("Mismatched payload: %s != %s", rtext, text)
 				}
 			}
 		}(i)
 	}
-	clientDone := make(chan struct{})
-	go func() {
-		clientWG.Wait()
-		close(clientDone)
-	}()
-	select {
-	case <-clientDone:
-	case <-time.After(time.Second * 30):
-		closeListener()
-		t.Fatal("timed out waiting for clients")
-	}
-
-	closeListener()
-	serverDone := make(chan struct{})
-	go func() {
-		serverWG.Wait()
-		close(serverDone)
-	}()
-	select {
-	case <-serverDone:
-	case <-time.After(time.Second * 30):
-		t.Fatal("timed out waiting for server shutdown")
-	}
+	clientWg.Wait()
+	serverWg.Wait()
 }

@@ -1,9 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
 	"flag"
 	"log"
-	"math/rand"
 	"net"
 	"strings"
 	"time"
@@ -93,10 +93,7 @@ func main() {
 			}
 			log.Printf("SndBufSize: %d, RcvBufSize: %d", *sndbuf, *rcvbuf)
 
-			go func() {
-				err := serveClient(wconn, *bufsize)
-				log.Fatalf("serveClient failed: %v", err)
-			}()
+			go serveClient(wconn, *bufsize)
 		}
 	} else {
 		var laddr *sctp.SCTPAddr
@@ -142,9 +139,13 @@ func main() {
 				PPID:   uint32(ppid),
 			}
 			ppid += 1
-			conn.SubscribeEvents(sctp.SCTP_EVENT_DATA_IO)
+			err = conn.SubscribeEvents(sctp.SCTP_EVENT_DATA_IO)
+			if err != nil {
+				log.Fatalf("failed to SubscribeEvents: %v", err)
+			}
+			var n int
 			buf := make([]byte, *bufsize)
-			n, err := rand.Read(buf)
+			n, err = rand.Read(buf)
 			if n != *bufsize {
 				log.Fatalf("failed to generate random string len: %d", *bufsize)
 			}
