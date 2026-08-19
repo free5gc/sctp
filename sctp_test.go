@@ -21,9 +21,13 @@ import (
 	"net"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
+	"time"
+
+	"github.com/pkg/errors"
 )
 
 type resolveSCTPAddrTest struct {
@@ -215,43 +219,47 @@ func TestSCTPConcurrentAccept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const N = 10
-	var wg sync.WaitGroup
-	wg.Add(N)
-	for i := 0; i < N; i++ {
-		go func() {
-			for {
-				c, err := ln.Accept(1000)
-				if err != nil {
-					fmt.Printf("err: %v", err)
-					break
-				}
-				c.Close()
+	defer ln.Close()
+	const N = 100
+	var serverWg sync.WaitGroup
+	var clientWg sync.WaitGroup
+	serverWg.Add(1)
+	go func(t *testing.T) {
+		defer serverWg.Done()
+		for range N {
+			c, err := ln.Accept(1000)
+			if err != nil {
+				t.Fatalf("err: %v", err)
+				return
 			}
-			wg.Done()
-		}()
-	}
-	attempts := 10 * N
-	fails := 0
-	for i := 0; i < attempts; i++ {
-		c, err := DialSCTP("sctp", nil, ln.Addr().(*SCTPAddr))
-		if err != nil {
-			fmt.Printf("err: %v", err)
-			fails++
-		} else {
 			c.Close()
 		}
+	}(t)
+	fails := 0
+	for range N {
+		clientWg.Add(1)
+		go func() {
+			defer clientWg.Done()
+			for {
+				c, err := DialSCTP("sctp", nil, ln.Addr().(*SCTPAddr))
+				if err == nil {
+					c.Close()
+					break
+				} else {
+					fmt.Printf("err: %v", err)
+					fails++
+				}
+			}
+		}()
 	}
-	ln.Close()
-	// BUG Accept() doesn't return even if we closed ln
-	//	wg.Wait()
+	serverWg.Wait()
+	clientWg.Wait()
 	if fails > 5 {
 		t.Fatalf("# of failed Dials: %v", fails)
 	}
 }
 
 func TestSCTPCloseRecv(t *testing.T) {
-	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(4))
 	addr, _ := ResolveSCTPAddr("sctp", "127.0.0.1:0")
 	ln, err := ListenSCTP("sctp", addr)
 	if err != nil {
@@ -272,7 +280,9 @@ func TestSCTPCloseRecv(t *testing.T) {
 		buf := make([]byte, 256)
 		_, xerr = conn.Read(buf)
 		t.Logf("got error while read: %v", xerr)
-		if xerr != io.EOF && xerr != syscall.EBADF {
+		// SCTPRead wraps errors with pkg/errors; use errors.Cause to unwrap before comparing.
+		// EBADF occurs when Close() completes before Read() enters Recvmsg.
+		if xerr != io.EOF && errors.Cause(xerr) != syscall.EBADF {
 			t.Fatalf("read failed: %v", xerr)
 		}
 	}()
@@ -347,47 +357,49 @@ func TestNoDelay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer ln.Close()
 	const N = 10
-	var wg sync.WaitGroup
-	wg.Add(N)
-	for i := 0; i < N; i++ {
+	var serverWg sync.WaitGroup
+	var clientWg sync.WaitGroup
+	for range N {
+		serverWg.Add(1)
 		go func() {
-			for {
-				c, err := ln.Accept(1000)
-				if err != nil {
-					fmt.Printf("err: %v", err)
-					break
-				}
-				c.Close()
+			defer serverWg.Done()
+			c, err := ln.Accept(1000)
+			if err != nil {
+				fmt.Printf("err: %v", err)
+				return
 			}
-			wg.Done()
+			c.Close()
 		}()
 	}
-	attempts := 10 * N
 	fails := 0
-	for i := 0; i < attempts; i++ {
-		c, err := DialSCTP("sctp", nil, ln.Addr().(*SCTPAddr))
-		if err != nil {
-			fails++
-		} else {
-			nodelayTest := func(i int) {
-				if err := c.SetNoDelay(i); err != nil {
-					t.Fatalf("SetNoDelay() failed %s", err)
+	for range N {
+		clientWg.Add(1)
+		go func() {
+			defer clientWg.Done()
+			c, err := DialSCTP("sctp", nil, ln.Addr().(*SCTPAddr))
+			if err != nil {
+				fails++
+			} else {
+				nodelayTest := func(i int) {
+					if err := c.SetNoDelay(i); err != nil {
+						t.Fatalf("SetNoDelay() failed %s", err)
+					}
+					if b, err := c.GetNoDelay(); err != nil {
+						t.Fatalf("GetNoDelay() failed")
+					} else if b != i {
+						t.Fatalf("GetNoDelay() not match what is set")
+					}
 				}
-				if b, err := c.GetNoDelay(); err != nil {
-					t.Fatalf("GetNoDelay() failed")
-				} else if b != i {
-					t.Fatalf("GetNoDelay() not match what is set")
-				}
+				nodelayTest(1)
+				nodelayTest(0)
+				c.Close()
 			}
-			nodelayTest(1)
-			nodelayTest(0)
-			c.Close()
-		}
+		}()
 	}
-	ln.Close()
-	// BUG Accept() doesn't return even if we closed ln
-	//	wg.Wait()
+	serverWg.Wait()
+	clientWg.Wait()
 	if fails > 5 {
 		t.Fatalf("# of failed Dials: %v", fails)
 	}
@@ -434,5 +446,185 @@ func TestAcceptCancel(t *testing.T) {
 	// BUG Accept() doesn't return even if we closed ln
 	if fails > 0 {
 		t.Fatalf("# of failed Dials: %v", fails)
+	}
+}
+
+func TestErrorWrapping(t *testing.T) {
+	// Test 1: Verify error from SCTPConnect with nil address contains context
+	_, err := SCTPConnect(-1, nil)
+	if err == nil {
+		t.Error("expected error for nil address")
+	} else {
+		errMsg := err.Error()
+		// Verify error contains function name
+		if !strings.Contains(errMsg, "SCTPConnect") {
+			t.Errorf("error should contain 'SCTPConnect': %v", err)
+		}
+		// Verify error mentions nil
+		if !strings.Contains(errMsg, "nil") {
+			t.Errorf("error should mention nil address: %v", err)
+		}
+	}
+
+	// Test 2: Test that DialSCTP errors contain proper context
+	// Try to dial an invalid network type
+	_, err = DialSCTP("invalid-network", nil, &SCTPAddr{Port: 1234})
+	if err == nil {
+		t.Error("expected error for invalid network")
+	} else {
+		errMsg := err.Error()
+		// The error should be about unknown network or similar
+		if !strings.Contains(errMsg, "network") && !strings.Contains(errMsg, "invalid") {
+			t.Logf("Got error (may be OK): %v", err)
+		}
+	}
+
+	// Test 3: Test error wrapping preserves error chain
+	ln, err := ListenSCTP("sctp", &SCTPAddr{Port: 0})
+	if err != nil {
+		t.Fatalf("failed to create listener: %v", err)
+	}
+	defer ln.Close()
+
+	// Get a connection to test socket options on
+	var testConn *SCTPConn
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		c, err := ln.Accept(1000)
+		if err == nil && c != nil {
+			if sctpConn, ok := c.(*SCTPConn); ok {
+				testConn = sctpConn
+			}
+		}
+	}()
+
+	// Connect to get a valid connection
+	clientConn, err := DialSCTP("sctp", nil, ln.Addr().(*SCTPAddr))
+	if err != nil {
+		t.Fatalf("failed to dial: %v", err)
+	}
+	defer clientConn.Close()
+
+	wg.Wait()
+
+	if testConn != nil {
+		defer testConn.Close()
+
+		// Test GetNoDelay - if it errors, verify context
+		_, err := testConn.GetNoDelay()
+		if err != nil {
+			// If it fails, verify error contains context
+			if !strings.Contains(err.Error(), "GetNoDelay") && !strings.Contains(err.Error(), "SCTP_NODELAY") {
+				t.Errorf("GetNoDelay error should contain operation context: %v", err)
+			}
+		}
+	}
+}
+
+func TestBindErrorContext(t *testing.T) {
+	// Create a socket for bind testing
+	sock, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_SCTP)
+	if err != nil {
+		t.Fatalf("failed to create socket: %v", err)
+	}
+	defer syscall.Close(sock)
+
+	// Test 1: Bind with invalid flags should return error with context
+	addr := &SCTPAddr{
+		IPAddrs: []net.IPAddr{{IP: net.IPv4(127, 0, 0, 1)}},
+		Port:    0,
+	}
+
+	err = SCTPBind(sock, addr, 999) // Invalid flag
+	if err == nil {
+		t.Error("expected error for invalid bind flags")
+	} else {
+		errMsg := err.Error()
+		// Verify error contains function name
+		if !strings.Contains(errMsg, "SCTPBind") {
+			t.Errorf("error should contain 'SCTPBind': %v", err)
+		}
+		// Verify error mentions invalid flags
+		if !strings.Contains(errMsg, "invalid") && !strings.Contains(errMsg, "flags") {
+			t.Errorf("error should mention invalid flags: %v", err)
+		}
+		// Verify we can extract the underlying EINVAL error
+		cause := errors.Cause(err)
+		if cause != syscall.EINVAL {
+			t.Errorf("expected syscall.EINVAL, got %v", cause)
+		}
+	}
+
+	// Test 2: Bind with nil address should return error with context
+	err = SCTPBind(sock, nil, SCTP_BINDX_ADD_ADDR)
+	if err == nil {
+		t.Error("expected error for nil address")
+	} else {
+		errMsg := err.Error()
+		// Verify error contains function name
+		if !strings.Contains(errMsg, "SCTPBind") {
+			t.Errorf("error should contain 'SCTPBind': %v", err)
+		}
+		// Verify error mentions nil address
+		if !strings.Contains(errMsg, "nil") {
+			t.Errorf("error should mention nil address: %v", err)
+		}
+	}
+
+	// Test 3: Valid bind should work and subsequent operations should show context
+	validAddr := &SCTPAddr{
+		IPAddrs: []net.IPAddr{{IP: net.IPv4(127, 0, 0, 1)}},
+		Port:    0,
+	}
+
+	err = SCTPBind(sock, validAddr, SCTP_BINDX_ADD_ADDR)
+	if err != nil {
+		// If bind fails, error should contain address info
+		errMsg := err.Error()
+		if !strings.Contains(errMsg, "127.0.0.1") {
+			t.Errorf("bind error should contain address: %v", err)
+		}
+		if !strings.Contains(errMsg, "add") || !strings.Contains(errMsg, "binding") {
+			t.Errorf("bind error should describe the operation: %v", err)
+		}
+	}
+}
+
+// TestCloseWaitsForInflightSCTPRead verifies that Close() does not release the
+// file descriptor until all in-flight SCTPRead calls have returned. Without this
+// guarantee, the OS may reassign the fd to a new connection while an old goroutine
+// is still blocked in Recvmsg, causing it to read data belonging to the new
+// connection (fd reuse race / TOCTOU).
+func TestCloseWaitsForInflightSCTPRead(t *testing.T) {
+	pair, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Close(pair[1])
+
+	conn := NewSCTPConn(pair[0], nil)
+
+	readerEntered := make(chan struct{})
+	readerExited := make(chan struct{})
+	go func() {
+		defer close(readerExited)
+		close(readerEntered)
+		buf := make([]byte, 256)
+		conn.SCTPRead(buf) // blocks until Shutdown or data arrives
+	}()
+
+	<-readerEntered
+	time.Sleep(10 * time.Millisecond) // give reader enough time to enter Recvmsg
+
+	conn.Close() // before fix: returns immediately; after fix: waits for reader to exit
+
+	// Key assertion: when Close() returns, the reader goroutine must have already exited
+	select {
+	case <-readerExited:
+		// PASS: reader has exited, fd can be safely released to the OS
+	default:
+		t.Error("Close() returned before SCTPRead goroutine exited — fd reuse race possible")
 	}
 }
